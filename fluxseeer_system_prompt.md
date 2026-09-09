@@ -24,7 +24,10 @@
 
 **Экран:** gm009605v4, 24.7×27.12 мм (gnd, vdd, sck, sda)
 
+**Плеер:** MP3-TF-16P (пины VCC,PX,TX,DAC_R,DAC_I,SPK_1,GND,SPK_2,BUSY,USB-,USB+,ADKEY_2,ADKEY_1,IO_2,GND,IO_1) + 2 маленьких динамика 8Ом 0.5Вт
+
 **Управление:**
+- REALPOY Sensor Module MPR121 Breakout V12 (пины 3.3v,IRQ,SCL,SDA,ADD,GND,0,1,2,3,4,5,6,7,8,9,10,11)
 - Энкодер Glover Publish (пины G, V, A, B, S)
 - Сенсорная кнопка TTP223 (gnd, i/o, vcc)
 
