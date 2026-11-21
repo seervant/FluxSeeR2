@@ -12,7 +12,7 @@ const EffectDescriptor g_effects[EFFECT_COUNT] = {
   { "STATIC",   renderEffect_Static,        true  },  // 1. Статический
   { "RAINBOW Z", renderEffect_RainbowZ,      false },  // 2. Динамическая Z-радуга
   { "RAINBOW C", renderEffect_RainbowCircle, false },  // 3. Динамическая круговая радуга
-  { "FLUID",    renderEffect_Fluid,          false },  // 4. Жидкость
+  { "FLUID",    renderEffect_Fluid,          true  },  // 4. Жидкость
   { "SPIRAL",   renderEffect_Spiral,         false },  // 5. Спираль
   { "BALLS",    renderEffect_Balls,          false },  // 6. Мячи в вакууме
 };

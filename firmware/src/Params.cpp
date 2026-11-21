@@ -46,6 +46,7 @@ const ParamSpec PARAMS_FLUID[] = {
   { "BUB SPD",   1,   16, PK_SCALE,     0 },
   { "BUB TAIL",  0,   16, PK_SCALE,     0 },
   { "BUB COLOR", 1,   64, PK_COLOR,     PF_WRAP },
+  { "LIQ COLOR", 1,   64, PK_COLOR,     PF_WRAP },
 };
 static const int16_t DEF_FLUID[] = {
   0,   // MODE: Авто
@@ -61,6 +62,7 @@ static const int16_t DEF_FLUID[] = {
   8,   // BUB SPD
   3,   // BUB TAIL
   16,  // BUB COLOR
+  200, // LIQ COLOR
 };
 
 // Эффект 5 — Спираль

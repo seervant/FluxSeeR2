@@ -107,5 +107,6 @@ struct Bubble {
   float    y = 0.0f;          // координата Y (строка)
   float    speedMult = 1.0f;  // индивидуальный множитель скорости
   uint8_t  hueOffset = 0;     // индивидуальное смещение оттенка
+  uint8_t  size = 1;          // индивидуальный радиус, в пикселях
   bool     active = false;
 };

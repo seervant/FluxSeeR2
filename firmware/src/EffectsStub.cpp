@@ -57,10 +57,6 @@ void renderEffect_RainbowCircle() {
   placeholderRunner(EFFECT_RAINBOW_CIRCLE, 40);
 }
 
-// Эффект 4 — Жидкость (заглушка; порт физики из 0.2.1 — следующий блок)
-void renderEffect_Fluid() {
-  placeholderRunner(EFFECT_FLUID, 96);
-}
 
 // Эффект 5 — Спираль (заглушка)
 void renderEffect_Spiral() {
