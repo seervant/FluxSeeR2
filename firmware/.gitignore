@@ -1,0 +1,11 @@
+# Артефакты сборки PlatformIO
+.pio/
+.pio_build/
+*.o
+*.elf
+*.bin
+*.map
+
+# Настройки VS Code / PlatformIO
+.vscode/
+*.code-workspace
