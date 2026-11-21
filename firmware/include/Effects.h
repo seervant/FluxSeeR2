@@ -22,7 +22,7 @@ void effectsRender();
 
 // --- Отрисовка конкретных эффектов ---
 void renderEffect_Static();          // Эффект 1 (реализован)
-void renderEffect_RainbowZ();        // Эффект 2 (заглушка)
+void renderEffect_RainbowZ();        // Эффект 2 (реализован)
 void renderEffect_RainbowCircle();   // Эффект 3 (заглушка)
 void renderEffect_Fluid();           // Эффект 4 (заглушка, порт из 0.2.1 — след. блок)
 void renderEffect_Spiral();          // Эффект 5 (заглушка)

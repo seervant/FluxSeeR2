@@ -47,11 +47,6 @@ static void placeholderRunner(uint8_t effectId, uint8_t hueBase) {
   uint8_t seg = (uint8_t)(phase[eff] % diskRingSize(ring));
   diskAdd(ring, seg, color);}
 
-// Эффект 2 — Динамическая Z-радуга (заглушка)
-void renderEffect_RainbowZ() {
-  placeholderRunner(EFFECT_RAINBOW_Z, 0);
-}
-
 // Эффект 3 — Динамическая круговая радуга (заглушка)
 void renderEffect_RainbowCircle() {
   placeholderRunner(EFFECT_RAINBOW_CIRCLE, 40);
