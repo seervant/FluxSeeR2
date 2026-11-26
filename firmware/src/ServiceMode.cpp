@@ -1,4 +1,5 @@
 #include "ServiceMode.h"
+#include "Calib3D.h"
 #include "Config.h"
 #include "Display.h"
 #include "LedGeometry.h"
@@ -23,6 +24,7 @@ static int16_t screenMax() {
     case 1: return MATRIX_HEIGHT - 1;                                 // строка
     case 2: return DISK_RING_COUNT - 1;                                // кольцо
     case 3: return (int16_t)diskRingSize((uint8_t)g_value[2]) - 1;    // сегмент
+    default: return 0;                                                // 3D-калибровка
   }
   return 0;
 }
@@ -46,10 +48,46 @@ void serviceToggle() {
 }
 
 // ---------------------------------------------------------------------------
+// Одиночное нажатие кнопки энкодера: подтверждение действия
+//
+// На экране «3D CAL» запускает мастер калибровки, внутри мастера —
+// переход к следующему шагу.
+// ---------------------------------------------------------------------------
+void serviceOnClick() {
+  if (!g_active) return;
+
+  if (calib3dActive()) {
+    calib3dTick();
+    return;
+  }
+
+  if (g_screen == 4) {
+    calib3dStart();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Ввод
 // ---------------------------------------------------------------------------
 void serviceTick(int32_t encDelta) {
   if (!g_active) return;
+
+  // --- Мастер калибровки 3D-сцены забирает управление на себя ---
+  if (calib3dActive()) {
+    static bool     calLastLeft  = false;
+    static uint32_t calLastMs    = 0;
+    bool left = (digitalRead(TOUCH_LEFT_PIN) == HIGH);
+    uint32_t now = millis();
+
+    if (left != calLastLeft && (now - calLastMs) > ENCODER_DEBOUNCE_MS) {
+      calLastMs = now;
+      if (left && !calLastLeft) {
+        calib3dCancel();              // левая сенсорная кнопка — отмена
+      }
+      calLastLeft = left;
+    }
+    return;                           // вращение энкодера не используется
+  }
 
   // --- Сенсорные кнопки: переключение экранов ---
   static bool     lastLeft  = false;
@@ -96,6 +134,12 @@ void serviceTick(int32_t encDelta) {
 // Тестовый паттерн
 // ---------------------------------------------------------------------------
 void serviceRender() {
+  // Мастер калибровки рисует прицел сам
+  if (calib3dActive()) {
+    calib3dRender();
+    return;
+  }
+
   ledsClear();
 
   switch (g_screen) {
@@ -120,10 +164,25 @@ void serviceRender() {
       for (uint8_t s = 0; s < n; s++) diskSet(ring, s, CRGB(0, 255, 130));
       break;
     }
-    default: {
+    case 3: {
       // Один сегмент кольца
       uint8_t ring = (uint8_t)g_value[2];
       diskSet(ring, (uint8_t)g_value[3], CRGB(255, 0, 255));
+      break;
+    }
+    default: {
+      // Экран калибровки 3D-сцены: показываем прицел и состояние
+      uint8_t col = SCENE_CROSSHAIR_COL;
+      for (uint8_t y = 0; y < MATRIX_HEIGHT; y++) {
+        sideSet(col, y, CRGB(0, 60, 120));
+      }
+      uint8_t row = MATRIX_HEIGHT / 2;
+      for (int8_t dx = -8; dx <= 8; dx++) {
+        int x = (int)col + dx;
+        while (x < 0) x += MATRIX_WIDTH;
+        while (x >= MATRIX_WIDTH) x -= MATRIX_WIDTH;
+        sideSet((uint8_t)x, row, CRGB(0, 190, 255));
+      }
       break;
     }
   }
@@ -141,6 +200,12 @@ void serviceDisplay() {
   if (now - lastMs < 100) return;
   lastMs = now;
 
+  // Мастер калибровки показывает свои инструкции
+  if (calib3dActive()) {
+    calib3dDisplay();
+    return;
+  }
+
   char line1[24];
   char line2[24];
 
@@ -148,8 +213,11 @@ void serviceDisplay() {
     case 0: snprintf(line1, sizeof(line1), "SIDE COL %d", (int)g_value[0]); break;
     case 1: snprintf(line1, sizeof(line1), "SIDE ROW %d", (int)g_value[1]); break;
     case 2: snprintf(line1, sizeof(line1), "DISK RING %d", (int)g_value[2]); break;
-    default:
+    case 3:
       snprintf(line1, sizeof(line1), "DISK R%d S%d", (int)g_value[2], (int)g_value[3]);
+      break;
+    default:
+      snprintf(line1, sizeof(line1), "3D CALIBRATION");
       break;
   }
   snprintf(line2, sizeof(line2), "MAX %d", (int)screenMax());

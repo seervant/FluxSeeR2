@@ -16,6 +16,8 @@ enum EffectId : uint8_t {
   EFFECT_SPIRAL,            // 5. Спираль
   EFFECT_BALLS,             // 6. Мячи в вакууме
   EFFECT_LAVA,              // 7. Лавовая лампа
+  EFFECT_SCENE_GRAV,        // 8. 3D-сцена, привязанная к гравитации
+  EFFECT_SCENE_BODY,        // 9. 3D-сцена, привязанная к корпусу
   EFFECT_COUNT
 };
 
@@ -32,7 +34,8 @@ enum ParamKind : uint8_t {
   PK_G_POWER,         // индекс в экспоненциальной шкале % силы G
   PK_COUNT,           // количество объектов
   PK_SIZE,            // размер в пикселях
-  PK_MODE             // 0..1 (Авто / Ручной)
+  PK_MODE,            // 0..1 (Авто / Ручной)
+  PK_FIGURE           // 0..3 (Куб / Октаэдр / Призма / Сфера)
 };
 
 // Флаги параметра
@@ -60,6 +63,12 @@ struct Telemetry {
   float    accX = 0.0f;
   float    accY = 0.0f;
   float    accZ = -1.0f;
+
+  // Гироскоп (угловая скорость, рад/с в системе датчика)
+  float    gyroX = 0.0f;
+  float    gyroY = 0.0f;
+  float    gyroZ = 0.0f;
+  bool     gyroReady = false;   // гироскоп отвечает и откалиброван
 
   // Батарея
   uint8_t  battery        = 50;      // процент заряда, 0..100

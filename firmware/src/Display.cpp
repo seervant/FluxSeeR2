@@ -2,6 +2,7 @@
 #include "Config.h"
 #include "Controls.h"
 #include "Effects.h"
+#include "Orientation.h"
 #include "Params.h"
 #include "Sensors.h"
 #include <Adafruit_GFX.h>
@@ -183,7 +184,40 @@ void displayRefresh() {
 
   // --- Строка 6: подсказка ---
   display.setCursor(0, 54);
-  display.print("L:R FX  ENC:PARAM");
+  if ((eff == EFFECT_SCENE_GRAV || eff == EFFECT_SCENE_BODY) && !g_sceneCalibrated) {
+    display.print("NO 3D CAL: HOLD ENC 2s");
+  } else {
+    display.print("L:R FX  ENC:PARAM");
+  }
+
+  displayFlush();
+}
+
+// ---------------------------------------------------------------------------
+// Экран мастера калибровки 3D-сцены
+// ---------------------------------------------------------------------------
+void displayCalib(const char* line1, const char* line2, const char* line3) {
+  if (!g_displayReady) return;
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(0, 0);
+  display.print(line1);
+  display.drawFastHLine(0, 9, 128, SSD1306_WHITE);
+
+  display.setCursor(0, 14);
+  display.print(line2);
+
+  display.setCursor(0, 26);
+  display.print(line3);
+
+  display.setCursor(0, 44);
+  display.print("ENC: CONFIRM");
+
+  display.setCursor(0, 54);
+  display.print("LEFT TOUCH: CANCEL");
 
   displayFlush();
 }

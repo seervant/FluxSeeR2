@@ -28,3 +28,5 @@ void renderEffect_Fluid();           // Эффект 4 (заглушка, пор
 void renderEffect_Spiral();          // Эффект 5 (заглушка)
 void renderEffect_Balls();           // Эффект 6 (заглушка)
 void renderEffect_Lava();            // Эффект 7 (реализован)
+void renderEffect_SceneGravity();    // Эффект 8 (реализован): 3D-сцена по гравитации
+void renderEffect_SceneBody();       // Эффект 9 (реализован): 3D-сцена по корпусу

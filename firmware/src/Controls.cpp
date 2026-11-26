@@ -122,7 +122,10 @@ static void handleEncoderButton() {
   }
 
   if (clickCount > 0 && (now - lastClickMs) > ENCODER_CLICK_WINDOW_MS) {
-    if (!serviceActive()) {
+    if (serviceActive()) {
+      // В сервисном режиме одиночное нажатие — подтверждение действия
+      if (clickCount == 1) serviceOnClick();
+    } else {
       if (clickCount == 1) {
         controlsNextParam();
       } else if (clickCount >= 5) {

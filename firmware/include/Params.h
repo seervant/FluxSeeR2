@@ -23,6 +23,8 @@ extern const ParamSpec PARAMS_FLUID[];
 extern const ParamSpec PARAMS_SPIRAL[];
 extern const ParamSpec PARAMS_BALLS[];
 extern const ParamSpec PARAMS_LAVA[];
+extern const ParamSpec PARAMS_SCENE_GRAV[];
+extern const ParamSpec PARAMS_SCENE_BODY[];
 
 // ---------------------------------------------------------------------------
 // Экспоненциальная шкала «процент силы притяжения G» (ТЗ:

@@ -113,6 +113,50 @@ static const int16_t DEF_LAVA[] = {
   1,   // COLOR
 };
 
+// Эффект 8 — 3D-сцена, привязанная к гравитации
+// Эффект 9 — 3D-сцена, привязанная к корпусу
+// Набор параметров одинаковый: отличается только логика привязки.
+// FIGURE — тип фигуры, SIZE — размер в % от радиуса корпуса,
+// EDGE — ширина подсветки рёбер (мм), DIST — расстояние до наблюдателя (мм),
+// EYE H — высота наблюдателя над центром лампы (мм).
+const ParamSpec PARAMS_SCENE_GRAV[] = {
+  { "BRIGHT",  1,   16, PK_BRIGHTNESS, 0 },
+  { "FIGURE",  0,    3, PK_FIGURE,     PF_WRAP },
+  { "SIZE",   10,  100, PK_PERCENT,    0 },
+  { "COLOR",   1,   64, PK_COLOR,      PF_WRAP },
+  { "EDGE",    0,   20, PK_SCALE,      0 },
+  { "DIST",  300,  900, PK_SCALE,      0 },
+  { "EYE H",   0,  400, PK_SCALE,      0 },
+};
+static const int16_t DEF_SCENE_GRAV[] = {
+  8,    // BRIGHT
+  0,    // FIGURE: куб
+  55,   // SIZE: 55 % от радиуса корпуса
+  1,    // COLOR
+  8,    // EDGE: 8 мм
+  600,  // DIST: вытянутая рука
+  100,  // EYE H: 100 мм над центром лампы
+};
+
+const ParamSpec PARAMS_SCENE_BODY[] = {
+  { "BRIGHT",  1,   16, PK_BRIGHTNESS, 0 },
+  { "FIGURE",  0,    3, PK_FIGURE,     PF_WRAP },
+  { "SIZE",   10,  100, PK_PERCENT,    0 },
+  { "COLOR",   1,   64, PK_COLOR,      PF_WRAP },
+  { "EDGE",    0,   20, PK_SCALE,      0 },
+  { "DIST",  300,  900, PK_SCALE,      0 },
+  { "EYE H",   0,  400, PK_SCALE,      0 },
+};
+static const int16_t DEF_SCENE_BODY[] = {
+  8,    // BRIGHT
+  0,    // FIGURE: куб
+  55,   // SIZE
+  1,    // COLOR
+  8,    // EDGE
+  600,  // DIST
+  100,  // EYE H
+};
+
 // ---------------------------------------------------------------------------
 // Экспоненциальная шкала силы G
 // ---------------------------------------------------------------------------
@@ -137,13 +181,13 @@ static int16_t g_values[EFFECT_COUNT][PARAM_TABLE_MAX];
 static const ParamSpec* const SPECS[EFFECT_COUNT] = {
   PARAMS_STATIC, PARAMS_RAINBOW_Z, PARAMS_RAINBOW_CIRCLE,
   PARAMS_FLUID,  PARAMS_SPIRAL,    PARAMS_BALLS,
-  PARAMS_LAVA
+  PARAMS_LAVA,   PARAMS_SCENE_GRAV, PARAMS_SCENE_BODY
 };
 
 static const int16_t* const DEFAULTS[EFFECT_COUNT] = {
   DEF_STATIC, DEF_RAINBOW_Z, DEF_RAINBOW_CIRCLE,
   DEF_FLUID,  DEF_SPIRAL,    DEF_BALLS,
-  DEF_LAVA
+  DEF_LAVA,   DEF_SCENE_GRAV, DEF_SCENE_BODY
 };
 
 // Количество параметров каждого эффекта (вычисляется на этапе компиляции)
@@ -154,7 +198,9 @@ static const uint8_t SPEC_COUNT[EFFECT_COUNT] = {
   (uint8_t)(sizeof(PARAMS_FLUID)         / sizeof(ParamSpec)),
   (uint8_t)(sizeof(PARAMS_SPIRAL)        / sizeof(ParamSpec)),
   (uint8_t)(sizeof(PARAMS_BALLS)         / sizeof(ParamSpec)),
-  (uint8_t)(sizeof(PARAMS_LAVA)          / sizeof(ParamSpec))
+  (uint8_t)(sizeof(PARAMS_LAVA)          / sizeof(ParamSpec)),
+  (uint8_t)(sizeof(PARAMS_SCENE_GRAV)    / sizeof(ParamSpec)),
+  (uint8_t)(sizeof(PARAMS_SCENE_BODY)    / sizeof(ParamSpec))
 };
 
 // ---------------------------------------------------------------------------
@@ -224,8 +270,18 @@ int16_t paramsDisplayValue(uint8_t effect, uint8_t param) {
 const char* paramsDisplayText(uint8_t effect, uint8_t param) {
   if (effect >= EFFECT_COUNT || param >= PARAM_TABLE_MAX) return "";
   const ParamSpec* sp = &SPECS[effect][param];
+  int16_t v = g_values[effect][param];
+
   if (sp->kind == PK_MODE) {
-    return (g_values[effect][param] == 0) ? "AUTO" : "MANU";
+    return (v == 0) ? "AUTO" : "MANU";
+  }
+  if (sp->kind == PK_FIGURE) {
+    switch (v) {
+      case 0:  return "CUBE";
+      case 1:  return "OCTA";
+      case 2:  return "PRISM";
+      default: return "SPHERE";
+    }
   }
   return "";
 }

@@ -24,5 +24,8 @@ void displayRefresh();
 // Вывод служебного экрана (режим проверки раскладки)
 void displayService(const char* line1, const char* line2);
 
+// Вывод экрана мастера калибровки 3D-сцены (три строки)
+void displayCalib(const char* line1, const char* line2, const char* line3);
+
 // Готовность дисплея (false — экран не инициализирован)
 bool displayReady();

@@ -16,6 +16,8 @@ const EffectDescriptor g_effects[EFFECT_COUNT] = {
   { "SPIRAL",   renderEffect_Spiral,         false },  // 5. Спираль
   { "BALLS",    renderEffect_Balls,          false },  // 6. Мячи в вакууме
   { "LAVA",     renderEffect_Lava,           true  },  // 7. Лавовая лампа
+  { "3D GRAV",  renderEffect_SceneGravity,   true  },  // 8. 3D-сцена по гравитации
+  { "3D BODY",  renderEffect_SceneBody,      true  },  // 9. 3D-сцена по корпусу
 };
 
 // ---------------------------------------------------------------------------
