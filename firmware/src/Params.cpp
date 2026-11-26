@@ -83,6 +83,36 @@ const ParamSpec PARAMS_BALLS[] = {
 };
 static const int16_t DEF_BALLS[] = { 8, 5, 6 };
 
+// Эффект 7 — Лавовая лампа
+// COVER — доля площади матрицы, занятая лавой (по умолчанию половина);
+// COUNT — число сгустков; SPREAD — разброс их размеров
+const ParamSpec PARAMS_LAVA[] = {
+  { "BRIGHT",  1,  16, PK_BRIGHTNESS, 0 },
+  { "COVER",  10,  90, PK_PERCENT,   0 },
+  { "COUNT",   1,  12, PK_COUNT,     0 },
+  { "SPREAD",  1,  16, PK_SCALE,     0 },
+  { "VISCOS",  1,  16, PK_SCALE,     0 },
+  { "ELAST",   1,  16, PK_SCALE,     0 },
+  { "HEAT",    1,  16, PK_SCALE,     0 },
+  { "MERGE",   0,  20, PK_PERCENT,   0 },
+  { "SPLIT",   0,  20, PK_PERCENT,   0 },
+  { "SPEED",   1,  16, PK_SCALE,     0 },
+  { "COLOR",   1,  64, PK_COLOR,     PF_WRAP },
+};
+static const int16_t DEF_LAVA[] = {
+  8,   // BRIGHT
+  50,  // COVER: половина площади матрицы
+  7,   // COUNT
+  7,   // SPREAD
+  8,   // VISCOS
+  8,   // ELAST
+  8,   // HEAT
+  2,   // MERGE: редко
+  1,   // SPLIT: очень редко
+  8,   // SPEED
+  1,   // COLOR
+};
+
 // ---------------------------------------------------------------------------
 // Экспоненциальная шкала силы G
 // ---------------------------------------------------------------------------
@@ -106,12 +136,14 @@ static int16_t g_values[EFFECT_COUNT][PARAM_TABLE_MAX];
 // Таблицы и значения по умолчанию сведены в общий массив для удобства инициализации
 static const ParamSpec* const SPECS[EFFECT_COUNT] = {
   PARAMS_STATIC, PARAMS_RAINBOW_Z, PARAMS_RAINBOW_CIRCLE,
-  PARAMS_FLUID,  PARAMS_SPIRAL,    PARAMS_BALLS
+  PARAMS_FLUID,  PARAMS_SPIRAL,    PARAMS_BALLS,
+  PARAMS_LAVA
 };
 
 static const int16_t* const DEFAULTS[EFFECT_COUNT] = {
   DEF_STATIC, DEF_RAINBOW_Z, DEF_RAINBOW_CIRCLE,
-  DEF_FLUID,  DEF_SPIRAL,    DEF_BALLS
+  DEF_FLUID,  DEF_SPIRAL,    DEF_BALLS,
+  DEF_LAVA
 };
 
 // Количество параметров каждого эффекта (вычисляется на этапе компиляции)
@@ -121,7 +153,8 @@ static const uint8_t SPEC_COUNT[EFFECT_COUNT] = {
   (uint8_t)(sizeof(PARAMS_RAINBOW_CIRCLE)/ sizeof(ParamSpec)),
   (uint8_t)(sizeof(PARAMS_FLUID)         / sizeof(ParamSpec)),
   (uint8_t)(sizeof(PARAMS_SPIRAL)        / sizeof(ParamSpec)),
-  (uint8_t)(sizeof(PARAMS_BALLS)         / sizeof(ParamSpec))
+  (uint8_t)(sizeof(PARAMS_BALLS)         / sizeof(ParamSpec)),
+  (uint8_t)(sizeof(PARAMS_LAVA)          / sizeof(ParamSpec))
 };
 
 // ---------------------------------------------------------------------------

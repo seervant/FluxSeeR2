@@ -15,6 +15,7 @@ enum EffectId : uint8_t {
   EFFECT_FLUID,             // 4. Жидкость
   EFFECT_SPIRAL,            // 5. Спираль
   EFFECT_BALLS,             // 6. Мячи в вакууме
+  EFFECT_LAVA,              // 7. Лавовая лампа
   EFFECT_COUNT
 };
 

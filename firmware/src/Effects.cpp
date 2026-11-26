@@ -15,6 +15,7 @@ const EffectDescriptor g_effects[EFFECT_COUNT] = {
   { "FLUID",    renderEffect_Fluid,          true  },  // 4. Жидкость
   { "SPIRAL",   renderEffect_Spiral,         false },  // 5. Спираль
   { "BALLS",    renderEffect_Balls,          false },  // 6. Мячи в вакууме
+  { "LAVA",     renderEffect_Lava,           true  },  // 7. Лавовая лампа
 };
 
 // ---------------------------------------------------------------------------
