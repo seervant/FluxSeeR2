@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| Версия прошивки | **0.011.22.2** |
+| Версия прошивки | **0.011.26.1** |
 | Версия железа | **0.011.21** (21.11.2026) |
 | Контроллер | ESP32-S3-DevKitC-1 (Liludin), ESP32-S3-WROOM-1 **N16R8** (16 МБ Quad flash + 8 МБ Octal PSRAM) |
 | Среда | VS Code + PlatformIO, Arduino framework, ядро arduino-esp32 2.0.17 |

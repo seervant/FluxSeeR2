@@ -15,7 +15,7 @@ static inline float mapf(float x, float in_min, float in_max, float out_min, flo
 }
 
 // --- Версии ---
-#define FIRMWARE_VERSION "0.011.22.2"   // отображается на OLED
+#define FIRMWARE_VERSION "0.011.26.1"   // отображается на OLED
 #define HARDWARE_VERSION "0.011.21"     // версия железа
 
 // ============================================================================
