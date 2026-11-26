@@ -15,7 +15,7 @@ static inline float mapf(float x, float in_min, float in_max, float out_min, flo
 }
 
 // --- Версии ---
-#define FIRMWARE_VERSION "0.011.22.1"   // отображается на OLED
+#define FIRMWARE_VERSION "0.011.22.2"   // отображается на OLED
 #define HARDWARE_VERSION "0.011.21"     // версия железа
 
 // ============================================================================
@@ -30,6 +30,11 @@ static inline float mapf(float x, float in_min, float in_max, float out_min, flo
 #define MATRIX_WIDTH        48
 #define MATRIX_HEIGHT       16
 #define SIDE_LED_COUNT      (MATRIX_WIDTH * MATRIX_HEIGHT)   // 768
+// Боковая матрица = 3 отдельные панели 16 x 16, у каждой своя линия данных
+#define PANEL_COUNT          3
+#define PANEL_WIDTH         16
+#define PANEL_HEIGHT        16
+#define PANEL_LED_COUNT     (PANEL_WIDTH * PANEL_HEIGHT)      // 256
 
 // Ориентация матрицы — все три панели 16x16 ставится одинаково,
 // подтверждается сервисным режимом после сборки

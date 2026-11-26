@@ -12,13 +12,22 @@
 // ============================================================================
 
 // --- Адресные светодиоды WS2812B (данные через 74AHCT125 -> 330 Ом) ---
-#define LED_SIDE_DATA_PIN   21   // J3 #18 — боковая матрица 48 x 16 (768 LED)
-#define LED_DISK_DATA_PIN   39   // J3 #9  — верхний диск, 8 колец (181 LED)
+// На ESP32-S3 ровно 4 TX-канала RMT (SOC_RMT_TX_CANDIDATES_PER_GROUP = 4),
+// поэтому 4 линии данных — это потолок. Боковая матрица разбита на 3 панели
+// 16 x 16, панели разъединяются (перемычки DOUT -> DIN снимаются), кольца
+// диска остаются последовательными внутри одной ленты.
+#define LED_PANEL1_DATA_PIN  21   // J3 #18 — панель 1 (столбцы 0..15)
+#define LED_PANEL2_DATA_PIN  14   // J1 #20 — панель 2 (столбцы 16..31)
+#define LED_PANEL3_DATA_PIN  15   // J1 #8  — панель 3 (столбцы 32..47)
+#define LED_DISK_DATA_PIN    39   // J3 #9  — верхний диск, 8 колец (181 LED)
+#define LED_LINE_COUNT         4   // 3 панели + диск
 
 // --- I2C: одна шина на 4 устройства (OLED, MAX17043, MPU-6050, MPR121) ---
 #define I2C_SDA_PIN          8   // J1 #12
 #define I2C_SCL_PIN          9   // J1 #15
-#define I2C_FREQ          100000   // 100 кГц — запас по помехам от 949 LED
+// 400 кГц: на одной плате обновление OLED не должно съедать кадр (24 fps).
+// Требует подтяжек 2.2 кОм вместо штатных 4.7 кОм на модулях (см. HARDWARE.md).
+#define I2C_FREQ          400000   // 400 кГц (быстрый режим I2C)
 
 // --- SPI: карта памяти microSD ---
 #define SPI_SCK_PIN         12   // J1 #18  (D13 шилда)
@@ -34,13 +43,11 @@
 #define MSGEQ7_STR_PIN       6   // J1 #6
 #define MSGEQ7_RST_PIN       7   // J1 #7
 
-// --- MP3-плеер MP3-TF-16P ---
-#define MP3_BUSY_PIN        14   // J1 #20
-#define MP3_IO1_PIN         15   // J1 #8
-#define MP3_IO2_PIN         16   // J1 #9
-#define MP3_UART_TX_PIN     17   // J1 #10 — TX ESP32 -> RX модуля
-#define MP3_UART_RX_PIN     18   // J1 #11 — TX модуля -> RX ESP32
-#define MP3_UART_BAUD      9600   // штатная скорость модуля
+// --- Аудио: I2S -> PCM5102A -> PAM8403 -> колонки ---
+// MP3-TF-16P из проекта исключён: своя память не нужна, звук берём с microSD.
+#define I2S_BCLK_PIN        16   // J1 #9  — PCM5102A BCLK
+#define I2S_LRC_PIN         17   // J1 #10 — PCM5102A LRC
+#define I2S_DOUT_PIN        18   // J1 #11 — PCM5102A DIN
 
 // --- Энкодер Glover ---
 #define ENC_A_PIN           40   // J3 #8

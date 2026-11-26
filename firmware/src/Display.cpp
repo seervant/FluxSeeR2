@@ -16,6 +16,63 @@ static Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 static bool g_displayReady = false;
 
 // ---------------------------------------------------------------------------
+// Постраничное обновление
+//
+// На одной плате обновление экрана не должно съедать кадр (24 fps). Полная
+// перерисовка — это 1024 байта по I2C: на 100 кГц получается ~92 мс блокировки,
+// то есть почти 77 % времени кадра. Поэтому шлём в шину только изменившиеся
+// страницы (по 128 байт), а если ничего не изменилось — не трогаем I2C вообще.
+//
+// SSD1306: 8 страниц по 128 байт. Команды: 0xB0|p — страница,
+// 0x00 — младший байт столбца, 0x10 — старший байт столбца,
+// далее 128 байт данных страницы (в режиме page addressing это ровно страница).
+// ---------------------------------------------------------------------------
+static uint8_t g_shadow[SCREEN_WIDTH * SCREEN_HEIGHT / 8];   // что уже на экране
+static bool g_shadowValid = false;
+
+static void displaySendPage(uint8_t page, const uint8_t* data) {
+  Wire.beginTransmission(OLED_ADDR);
+  Wire.write((uint8_t)0x00);             // Co=0, D/C=0 -> одиночная команда
+  Wire.write((uint8_t)(0xB0 | page));    // адрес страницы
+  Wire.write((uint8_t)0x00);             // младший байт столбца = 0
+  Wire.write((uint8_t)0x10);             // старший байт столбца = 0
+  Wire.write(data, SCREEN_WIDTH);        // 128 байт данных страницы
+  Wire.endTransmission();
+}
+
+static void displayFlush() {
+  if (!g_displayReady) return;
+
+  const uint8_t* buf = display.getBuffer();
+  uint8_t firstPage = 0xFF;
+  uint8_t lastPage = 0;
+
+  for (uint8_t page = 0; page < (SCREEN_HEIGHT / 8); page++) {
+    bool dirty = !g_shadowValid;
+    if (!dirty) {
+      const uint8_t* pageBuf = buf + (uint16_t)page * SCREEN_WIDTH;
+      const uint8_t* shadowPage = g_shadow + (uint16_t)page * SCREEN_WIDTH;
+      for (uint16_t col = 0; col < SCREEN_WIDTH; col++) {
+        if (pageBuf[col] != shadowPage[col]) { dirty = true; break; }
+      }
+    }
+    if (dirty) {
+      if (page < firstPage) firstPage = page;
+      lastPage = page;
+    }
+  }
+
+  if (firstPage == 0xFF) return;   // экран не изменился — шину не трогаем
+
+  for (uint8_t page = firstPage; page <= lastPage; page++) {
+    uint16_t offset = (uint16_t)page * SCREEN_WIDTH;
+    displaySendPage(page, buf + offset);
+    memcpy(g_shadow + offset, buf + offset, SCREEN_WIDTH);
+  }
+  g_shadowValid = true;
+}
+
+// ---------------------------------------------------------------------------
 // Инициализация: три попытки, при неудаче работаем без экрана
 // ---------------------------------------------------------------------------
 void displayInit() {
@@ -24,6 +81,8 @@ void displayInit() {
       g_displayReady = true;
       display.clearDisplay();
       display.display();
+      memset(g_shadow, 0, sizeof(g_shadow));
+      g_shadowValid = true;
       return;
     }
     delay(50);
@@ -126,7 +185,7 @@ void displayRefresh() {
   display.setCursor(0, 54);
   display.print("L:R FX  ENC:PARAM");
 
-  display.display();
+  displayFlush();
 }
 
 // ---------------------------------------------------------------------------
@@ -155,5 +214,5 @@ void displayService(const char* line1, const char* line2) {
   display.setCursor(0, 54);
   display.print("HOLD ENC:BACK");
 
-  display.display();
+  displayFlush();
 }
