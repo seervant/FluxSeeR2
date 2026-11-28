@@ -12,6 +12,7 @@
 #include "Settings.h"
 #include "ServiceMode.h"
 #include "Orientation.h"
+#include "Model3D.h"
 
 // ============================================================================
 // FleXSeeR2 — точка входа
@@ -47,6 +48,9 @@ void setup() {
 
   // --- Ориентация лампы: загрузка калибровки 3D-сцены из NVS ---
   orientationInit();
+
+  // --- SD-карта: список 3D-моделей для эффектов 8 и 9 ---
+  model3dInit();
 
   // --- Фиксация начальной ориентации (для эффекта «Жидкость») ---
   calibrateGravityStartup();

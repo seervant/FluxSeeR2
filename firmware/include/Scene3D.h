@@ -23,23 +23,25 @@
 // ============================================================================
 
 // Количество фигур, переключаемых параметром FIGURE
-#define SCENE_FIGURE_COUNT 4
+#define SCENE_FIGURE_COUNT 5
 
 // Индексы фигур
 #define SCENE_FIG_CUBE    0
 #define SCENE_FIG_OCTA    1
 #define SCENE_FIG_PRISM   2
 #define SCENE_FIG_SPHERE  3
+#define SCENE_FIG_MODEL   4   // модель с SD-карты (.fle3d)
 
 // Индексы параметров эффектов 3D-сцены (одинаковые для эффектов 8 и 9)
 #define SCENE_P_BRIGHT 0
 #define SCENE_P_FIGURE 1
-#define SCENE_P_SIZE   2
-#define SCENE_P_COLOR  3
-#define SCENE_P_EDGE   4
-#define SCENE_P_DIST   5
-#define SCENE_P_EYEH   6
-#define SCENE_PARAM_COUNT 7
+#define SCENE_P_MODEL  2
+#define SCENE_P_SIZE   3
+#define SCENE_P_COLOR  4
+#define SCENE_P_EDGE   5
+#define SCENE_P_DIST   6
+#define SCENE_P_EYEH   7
+#define SCENE_PARAM_COUNT 8
 
 // Параметры отрисовки сцены
 struct SceneOptions {

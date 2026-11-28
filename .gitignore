@@ -11,3 +11,7 @@ firmware/.pio/
 # РџСЂРѕС‡РµРµ
 .DS_Store
 Thumbs.db
+# Тестовые артефакты конвертера моделей
+tools/test.glb
+tools/test.fle3d
+tools/__pycache__/

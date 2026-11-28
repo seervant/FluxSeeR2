@@ -1,6 +1,7 @@
 #include "Scene3D.h"
 #include "Config.h"
 #include "LedGeometry.h"
+#include "Model3D.h"
 
 // ============================================================================
 // РЕНДЕР 3D-СЦЕНЫ — реализация
@@ -167,9 +168,170 @@ static CRGB shadeColor(uint8_t hue, float shade, float edgeK) {
 }
 
 // ---------------------------------------------------------------------------
+// Сдвиг оттенка (для моделей: позволяет перекрасить модель параметром COLOR)
+// ---------------------------------------------------------------------------
+static CRGB hueShift(CRGB c, uint8_t shift) {
+  if (shift == 0) return c;
+
+  float r = c.r / 255.0f, g = c.g / 255.0f, b = c.b / 255.0f;
+  float mx = fmaxf(r, fmaxf(g, b));
+  float mn = fminf(r, fminf(g, b));
+  float d = mx - mn;
+
+  float h = 0.0f;
+  if (d > 1e-6f) {
+    if (mx == r)      h = fmodf((g - b) / d, 6.0f);
+    else if (mx == g) h = (b - r) / d + 2.0f;
+    else              h = (r - g) / d + 4.0f;
+    h *= 60.0f;
+    if (h < 0) h += 360.0f;
+  }
+  float s = (mx <= 1e-6f) ? 0.0f : d / mx;
+  float v = mx;
+
+  h = fmodf(h + (float)shift * 1.40625f, 360.0f);   // 1 единица параметра = 1.40625°
+
+  float c2 = v * s;
+  float x = c2 * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+  float mm = v - c2;
+  float rr = 0, gg = 0, bb = 0;
+  if (h < 60)       { rr = c2; gg = x;  bb = 0; }
+  else if (h < 120) { rr = x;  gg = c2; bb = 0; }
+  else if (h < 180) { rr = 0;  gg = c2; bb = x; }
+  else if (h < 240) { rr = 0;  gg = x;  bb = c2; }
+  else if (h < 300) { rr = x;  gg = 0;  bb = c2; }
+  else              { rr = c2; gg = 0;  bb = x; }
+
+  return CRGB((uint8_t)((rr + mm) * 255.0f),
+              (uint8_t)((gg + mm) * 255.0f),
+              (uint8_t)((bb + mm) * 255.0f));
+}
+
+// ---------------------------------------------------------------------------
+// Отрисовка 3D-модели с SD-карты
+//
+// Тот же луч «глаз -> поверхность цилиндра», но пересечение ищется
+// в сетке треугольников (BVH внутри Model3D). Цвет берётся из вершин
+// с интерполяцией по барицентрическим координатам, рёбра подсвечиваются
+// по расстоянию до края треугольника.
+// ---------------------------------------------------------------------------
+static void renderModel(const SceneOptions& opt, const Quat& bodyToScene, const Vec3& eyeScene) {
+  if (!model3dLoaded()) return;
+
+  const float R      = SCENE_CYL_RADIUS_MM;
+  const float H      = SCENE_CYL_HEIGHT_MM;
+  const float rowH   = H / (float)MATRIX_HEIGHT;
+  const float colAng = 2.0f * PI / (float)MATRIX_WIDTH;
+
+  // Радиус модели в мм (параметр SIZE) и перевод единиц модели в миллиметры
+  float radiusMm = R * constrain(opt.sizePct, 5.0f, 100.0f) / 100.0f;
+  float radiusUnits = model3dRadius();
+  if (radiusUnits <= 0.0f) return;
+  float scale = radiusMm / radiusUnits;
+
+  Vec3 eyeUnits = eyeScene / scale;
+
+  const float edgeWidth = opt.edgeMm;
+  const float edgeFade  = 1.5f;
+
+  for (uint8_t x = 0; x < MATRIX_WIDTH; x++) {
+    float ang = (float)SCENE_COL_DIR * (float)x * colAng;
+    float sn = sinf(ang), cs = cosf(ang);
+    Vec3 nBody(sn, 0.0f, cs);
+
+    for (uint8_t y = 0; y < MATRIX_HEIGHT; y++) {
+      float h = ((float)y + 0.5f) * rowH - H * 0.5f;
+
+      Vec3 pBody(sn * R, h, cs * R);
+      Vec3 pScene = bodyToScene.rotate(pBody);
+      Vec3 nScene = bodyToScene.rotate(nBody);
+
+      Vec3 toEye = eyeScene - pScene;
+      float dist = toEye.length();
+      if (dist < 1e-3f) continue;
+      if (nScene.dot(toEye) <= 0.0f) continue;
+
+      Vec3 dir = (toEye * -1.0f) / dist;      // от наблюдателя вглубь сцены
+
+      ModelHit hit = model3dCast(eyeUnits, dir);
+      if (!hit.hit) continue;
+
+      float tMm = hit.t * scale;
+      Vec3 q = eyeScene + dir * tMm;
+
+      // Треугольник и его вершины (в единицах модели)
+      uint16_t i0, i1, i2;
+      model3dTriangle(hit.tri, i0, i1, i2);
+      Vec3 a = model3dVertex(i0);
+      Vec3 b = model3dVertex(i1);
+      Vec3 c = model3dVertex(i2);
+
+      Vec3 e1 = b - a;
+      Vec3 e2 = c - a;
+      Vec3 cr = e1.cross(e2);
+      float len = cr.length();
+      if (len < 1e-9f) continue;
+      Vec3 nrm = cr / len;
+
+      float lambert = -nrm.dot(dir);
+      if (lambert < 0.0f) lambert = 0.0f;
+      float shade = 0.16f + 0.84f * lambert;
+
+      float depth = constrain((tMm - 380.0f) / 420.0f, 0.0f, 1.0f);
+      shade *= (1.0f - 0.20f * depth);
+
+      // Расстояние до ребра треугольника: минимальная барицентрическая
+      // координата, умноженная на высоту треугольника
+      float wgt = 1.0f - hit.u - hit.v;
+      float minBary = fminf(hit.u, fminf(hit.v, wgt));
+      if (minBary < 0.0f) minBary = 0.0f;
+      float area = 0.5f * len;
+      float maxEdge = fmaxf(e1.length(), fmaxf((c - b).length(), (a - c).length()));
+      float alt = (maxEdge > 1e-6f) ? (2.0f * area / maxEdge) : 0.0f;
+      float distEdge = minBary * alt * scale;
+      float edgeK = constrain((edgeWidth + edgeFade - distEdge) / edgeFade, 0.0f, 1.0f);
+
+      // Цвет из вершин (интерполяция по барицентрическим координатам)
+      CRGB c0 = model3dVertexColor(i0);
+      CRGB c1 = model3dVertexColor(i1);
+      CRGB c2 = model3dVertexColor(i2);
+      CRGB base((uint8_t)(c0.r * wgt + c1.r * hit.u + c2.r * hit.v),
+                (uint8_t)(c0.g * wgt + c1.g * hit.u + c2.g * hit.v),
+                (uint8_t)(c0.b * wgt + c1.b * hit.u + c2.b * hit.v));
+
+      // Сдвиг оттенка параметром COLOR
+      base = hueShift(base, opt.hue);
+
+      // Затемнение и подсветка ребра
+      uint8_t val = (uint8_t)constrain(255.0f * shade, 0.0f, 255.0f);
+      CRGB face((uint8_t)(base.r * val / 255),
+                (uint8_t)(base.g * val / 255),
+                (uint8_t)(base.b * val / 255));
+      uint8_t valE = (uint8_t)constrain(255.0f * (shade * 0.45f + 0.55f), 0.0f, 255.0f);
+      CRGB edge((uint8_t)constrain(base.r * valE / 255 + 90, 0.0f, 255.0f),
+                (uint8_t)constrain(base.g * valE / 255 + 90, 0.0f, 255.0f),
+                (uint8_t)constrain(base.b * valE / 255 + 90, 0.0f, 255.0f));
+
+      CRGB out;
+      out.r = (uint8_t)constrain(face.r + (edge.r - (int)face.r) * edgeK, 0.0f, 255.0f);
+      out.g = (uint8_t)constrain(face.g + (edge.g - (int)face.g) * edgeK, 0.0f, 255.0f);
+      out.b = (uint8_t)constrain(face.b + (edge.b - (int)face.b) * edgeK, 0.0f, 255.0f);
+
+      sideSet(x, y, out);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Основная отрисовка
 // ---------------------------------------------------------------------------
 void scene3dRender(const SceneOptions& opt, const Quat& bodyToScene, const Vec3& eyeScene) {
+  // Модель с SD-карты — отдельный путь
+  if (opt.figure == SCENE_FIG_MODEL) {
+    renderModel(opt, bodyToScene, eyeScene);
+    return;
+  }
+
   const float R      = SCENE_CYL_RADIUS_MM;
   const float H      = SCENE_CYL_HEIGHT_MM;
   const float rowH   = H / (float)MATRIX_HEIGHT;

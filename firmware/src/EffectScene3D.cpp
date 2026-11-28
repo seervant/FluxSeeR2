@@ -2,6 +2,7 @@
 #include "Config.h"
 #include "LedGeometry.h"
 #include "Math3D.h"
+#include "Model3D.h"
 #include "Orientation.h"
 #include "Params.h"
 #include "Scene3D.h"
@@ -49,6 +50,35 @@ static void sceneReadParams(uint8_t eff, SceneOptions& opt,
 }
 
 // ---------------------------------------------------------------------------
+// Подготовка модели с SD-карты
+//
+// Файл читается один раз на выбранную модель; переключение параметра
+// MODEL перечитывает файл (занимает десятки миллисекунд).
+// ---------------------------------------------------------------------------
+static void scenePrepareModel(uint8_t eff) {
+  uint8_t want = (uint8_t)constrain(paramsValue(eff, SCENE_P_MODEL), 0, MODEL_MAX_FILES - 1);
+
+  // Карта могла быть вставлена уже после включения — пробуем смонтировать
+  // раз в несколько секунд, но не чаще (монтирование блокирует шину)
+  if (!model3dCardReady()) {
+    static uint32_t lastTryMs = 0;
+    if (millis() - lastTryMs > 5000) {
+      lastTryMs = millis();
+      model3dInit();
+    }
+    return;
+  }
+
+  if (model3dLoadedIndex() == want) {
+    // модель уже загружена — только двигаем анимацию
+    model3dSetTime((float)millis() * 0.001f);
+    return;
+  }
+
+  model3dLoad(want);
+}
+
+// ---------------------------------------------------------------------------
 // Положение наблюдателя в калибровочной системе
 //
 // Азимут задан столбцом с «прицелом»: во время калибровки пользователь
@@ -70,6 +100,7 @@ void renderEffect_SceneGravity() {
   SceneOptions opt;
   float distMm = 0.0f, eyeHmm = 0.0f;
   sceneReadParams(eff, opt, distMm, eyeHmm);
+  if (opt.figure == SCENE_FIG_MODEL) scenePrepareModel(eff);
 
   // Система сцены = калибровочная (мировая): объект и наблюдатель в ней
   // неподвижны, а корпус лампы поворачивается.
@@ -88,6 +119,7 @@ void renderEffect_SceneBody() {
   SceneOptions opt;
   float distMm = 0.0f, eyeHmm = 0.0f;
   sceneReadParams(eff, opt, distMm, eyeHmm);
+  if (opt.figure == SCENE_FIG_MODEL) scenePrepareModel(eff);
 
   // Система сцены = система корпуса: объект неподвижен в ней,
   // а наблюдатель перемещается при повороте лампы.

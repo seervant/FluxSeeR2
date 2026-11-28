@@ -1,5 +1,6 @@
 #include "Params.h"
 #include "Config.h"
+#include "Model3D.h"
 
 // ============================================================================
 // РЕЕСТР ПАРАМЕТРОВ ЭФФЕКТОВ — реализация
@@ -116,12 +117,13 @@ static const int16_t DEF_LAVA[] = {
 // Эффект 8 — 3D-сцена, привязанная к гравитации
 // Эффект 9 — 3D-сцена, привязанная к корпусу
 // Набор параметров одинаковый: отличается только логика привязки.
-// FIGURE — тип фигуры, SIZE — размер в % от радиуса корпуса,
-// EDGE — ширина подсветки рёбер (мм), DIST — расстояние до наблюдателя (мм),
-// EYE H — высота наблюдателя над центром лампы (мм).
+// FIGURE — тип фигуры (или MODEL — модель с SD-карты), MODEL — номер файла,
+// SIZE — размер в % от радиуса корпуса, EDGE — ширина подсветки рёбер (мм),
+// DIST — расстояние до наблюдателя (мм), EYE H — высота наблюдателя (мм).
 const ParamSpec PARAMS_SCENE_GRAV[] = {
   { "BRIGHT",  1,   16, PK_BRIGHTNESS, 0 },
-  { "FIGURE",  0,    3, PK_FIGURE,     PF_WRAP },
+  { "FIGURE",  0,    4, PK_FIGURE,     PF_WRAP },
+  { "MODEL",   0,   15, PK_MODEL,      0 },
   { "SIZE",   10,  100, PK_PERCENT,    0 },
   { "COLOR",   1,   64, PK_COLOR,      PF_WRAP },
   { "EDGE",    0,   20, PK_SCALE,      0 },
@@ -131,6 +133,7 @@ const ParamSpec PARAMS_SCENE_GRAV[] = {
 static const int16_t DEF_SCENE_GRAV[] = {
   8,    // BRIGHT
   0,    // FIGURE: куб
+  0,    // MODEL: первая модель в списке
   55,   // SIZE: 55 % от радиуса корпуса
   1,    // COLOR
   8,    // EDGE: 8 мм
@@ -140,7 +143,8 @@ static const int16_t DEF_SCENE_GRAV[] = {
 
 const ParamSpec PARAMS_SCENE_BODY[] = {
   { "BRIGHT",  1,   16, PK_BRIGHTNESS, 0 },
-  { "FIGURE",  0,    3, PK_FIGURE,     PF_WRAP },
+  { "FIGURE",  0,    4, PK_FIGURE,     PF_WRAP },
+  { "MODEL",   0,   15, PK_MODEL,      0 },
   { "SIZE",   10,  100, PK_PERCENT,    0 },
   { "COLOR",   1,   64, PK_COLOR,      PF_WRAP },
   { "EDGE",    0,   20, PK_SCALE,      0 },
@@ -150,6 +154,7 @@ const ParamSpec PARAMS_SCENE_BODY[] = {
 static const int16_t DEF_SCENE_BODY[] = {
   8,    // BRIGHT
   0,    // FIGURE: куб
+  0,    // MODEL
   55,   // SIZE
   1,    // COLOR
   8,    // EDGE
@@ -280,8 +285,12 @@ const char* paramsDisplayText(uint8_t effect, uint8_t param) {
       case 0:  return "CUBE";
       case 1:  return "OCTA";
       case 2:  return "PRISM";
-      default: return "SPHERE";
+      case 3:  return "SPHERE";
+      default: return "MODEL";
     }
+  }
+  if (sp->kind == PK_MODEL) {
+    return model3dName((uint8_t)v);
   }
   return "";
 }
