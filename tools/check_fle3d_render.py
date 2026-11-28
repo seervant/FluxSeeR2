@@ -3,12 +3,14 @@
 Отрисовка модели .fle3d на матрице 48x16 — проверка формата «глазами»
 прошивки до того, как она прочитает файл с SD-карты.
 
-Использует ту же геометрию, что и firmware/src/Scene3D.cpp:
+Использует ту же геометрию и те же формулы, что и firmware/src/Scene3D.cpp:
 корпус R = 80 мм, H = 160 мм, луч из точки наблюдателя через поверхность
-цилиндра, затенение по нормали грани.
+цилиндра, масштаб модели по радиусу из заголовка .fle3d, затенение по
+нормали грани, подсветка рёбер.
 
 Запуск:
-    python check_fle3d_render.py model.fle3d [--frame 0] [--eye-h 100] [--dist 600]
+    python check_fle3d_render.py model.fle3d [--frame 0] [--size 55]
+                                       [--eye-h 100] [--dist 600] [--edge 8]
 """
 
 import argparse
@@ -19,11 +21,26 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fle3d
 
+# геометрия корпуса — как в firmware/include/Config.h
 R = 80.0
 H = 160.0
 W = 48
 HT = 16
 COL_DIR = 1
+
+# столбец с «прицелом» — как в firmware/include/Config.h.
+# Наблюдатель стоит напротив этого столбца, поэтому шов ленты
+# (между 47 и 0) оказывается за спиной, а объект в центре сцены
+# не разрезается пополам.
+CROSSHAIR_COL = 24
+
+# значения по умолчанию — как в Config.h
+DEF_SIZE_PCT = 55.0
+DEF_EYE_H_MM = 100.0
+DEF_DIST_MM = 600.0
+DEF_EDGE_MM = 8.0
+
+EDGE_FADE = 1.5
 
 
 def vsub(a, b):
@@ -66,20 +83,31 @@ def ray_tri(o, d, a, b, c):
     return (t, u, v)
 
 
-def render(model, frame, eye, scale_mm, show_colors=True):
-    """scale_mm — половина габарита модели в мм (масштаб объекта в лампе)."""
+def render(model, frame, eye, size_pct, edge_mm=DEF_EDGE_MM):
+    """
+    Отрисовка модели на матрице. Формулы повторяют renderModel()
+    из firmware/src/Scene3D.cpp.
+
+    Возвращает (grid, colors) — символы и цвета пикселей.
+    """
     if model["frameCount"] > 1:
         pos = model["frames"][min(frame, model["frameCount"] - 1)]
     else:
         pos = [(v["pos"][0], v["pos"][1], v["pos"][2]) for v in model["vertices"]]
 
-    # модель в мм: единицы файла -> мм
-    k = scale_mm / 512.0
-    pos = [(p[0] * k, p[1] * k, p[2] * k) for p in pos]
+    # Масштаб: радиус модели приводится к заданной доле радиуса корпуса.
+    # Радиус модели — полудиагональ габаритов (из заголовка .fle3d).
+    radius_units = model["modelRadius"]
+    if radius_units <= 0.0:
+        return ([[" "] * W for _ in range(HT)],
+                [[(0, 0, 0)] * W for _ in range(HT)])
+    radius_mm = R * max(5.0, min(100.0, size_pct)) / 100.0
+    scale = radius_mm / radius_units
 
+    pos_mm = [(p[0] * scale, p[1] * scale, p[2] * scale) for p in pos]
     tris = []
     for ti, t in enumerate(model["triangles"]):
-        tris.append((pos[t[0]], pos[t[1]], pos[t[2]], ti))
+        tris.append((pos_mm[t[0]], pos_mm[t[1]], pos_mm[t[2]], ti))
 
     row_h = H / HT
     grid = [[" "] * W for _ in range(HT)]
@@ -94,6 +122,8 @@ def render(model, frame, eye, scale_mm, show_colors=True):
             p_body = (sn * R, hh, cs * R)
             to_eye = vsub(eye, p_body)
             dist = math.sqrt(vdot(to_eye, to_eye))
+            if dist < 1e-3:
+                continue
             if vdot(n_body, to_eye) <= 0:
                 continue
             d = (-to_eye[0] / dist, -to_eye[1] / dist, -to_eye[2] / dist)
@@ -107,18 +137,45 @@ def render(model, frame, eye, scale_mm, show_colors=True):
                 continue
 
             t, u, v, a, b, c, idx = best
-            nrm = vnorm(vcross(vsub(b, a), vsub(c, a)))
-            lam = max(0.0, -vdot(nrm, d))
-            shade = 0.16 + 0.84 * lam
-            ch = shadeColor(model, idx, u, v, shade)
+            e1 = vsub(b, a)
+            e2 = vsub(c, a)
+            cr = vcross(e1, e2)
+            length = math.sqrt(vdot(cr, cr))
+            if length < 1e-9:
+                continue
+            nrm = (cr[0] / length, cr[1] / length, cr[2] / length)
+
+            lambert = -vdot(nrm, d)
+            if lambert < 0.0:
+                lambert = 0.0
+            shade = 0.16 + 0.84 * lambert
+
+            # воздушная перспектива — как в прошивке
+            depth = max(0.0, min(1.0, (t - 380.0) / 420.0))
+            shade *= (1.0 - 0.20 * depth)
+
+            # расстояние до ребра треугольника
+            wgt = 1.0 - u - v
+            min_bary = min(u, v, wgt)
+            if min_bary < 0.0:
+                min_bary = 0.0
+            area = 0.5 * length
+            max_edge = max(math.sqrt(vdot(e1, e1)),
+                            max(math.sqrt(vdot(vsub(c, b), vsub(c, b))),
+                                math.sqrt(vdot(vsub(a, c), vsub(a, c)))))
+            alt = (2.0 * area / max_edge) if max_edge > 1e-6 else 0.0
+            dist_edge = min_bary * alt
+            edge_k = max(0.0, min(1.0, (edge_mm + EDGE_FADE - dist_edge) / EDGE_FADE))
+
+            ch = shadeColor(model, idx, u, v, shade, edge_k)
             grid[HT - 1 - y][x] = ch[0]
             colors[HT - 1 - y][x] = ch[1]
 
     return grid, colors
 
 
-def shadeColor(model, tri_idx, u, v, shade):
-    """Символ + цвет (интерполяция цвета по грани)."""
+def shadeColor(model, tri_idx, u, v, shade, edge_k=0.0):
+    """Символ + цвет (интерполяция цвета по грани, подсветка ребра)."""
     t = model["triangles"][tri_idx]
     w = 1.0 - u - v
     cols = []
@@ -128,9 +185,18 @@ def shadeColor(model, tri_idx, u, v, shade):
     r = int(cols[0][0] * w + cols[1][0] * u + cols[2][0] * v)
     g = int(cols[0][1] * w + cols[1][1] * u + cols[2][1] * v)
     b = int(cols[0][2] * w + cols[1][2] * u + cols[2][2] * v)
-    r = int(r * shade)
-    g = int(g * shade)
-    b = int(b * shade)
+
+    # ребро: осветление к белому
+    fr = int(r * shade)
+    fg = int(g * shade)
+    fb = int(b * shade)
+    er = min(255, int(fr * 0.45 + 255 * 0.55) + 30)
+    eg = min(255, int(fg * 0.45 + 255 * 0.55) + 30)
+    eb = min(255, int(fb * 0.45 + 255 * 0.55) + 30)
+    r = int(fr + (er - fr) * edge_k)
+    g = int(fg + (eg - fg) * edge_k)
+    b = int(fb + (eb - fb) * edge_k)
+
     level = " .:-=+*#%@"[max(0, min(9, int(shade * 9.99)))]
     return level, (r, g, b)
 
@@ -139,22 +205,29 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
     ap.add_argument("--frame", type=int, default=0)
-    ap.add_argument("--eye-h", type=float, default=100.0)
-    ap.add_argument("--dist", type=float, default=600.0)
-    ap.add_argument("--size", type=float, default=44.0, help="полуразмер модели, мм")
+    ap.add_argument("--eye-h", type=float, default=DEF_EYE_H_MM)
+    ap.add_argument("--dist", type=float, default=DEF_DIST_MM)
+    ap.add_argument("--size", type=float, default=DEF_SIZE_PCT,
+                    help="размер модели, %% от радиуса корпуса (5..100)")
+    ap.add_argument("--edge", type=float, default=DEF_EDGE_MM,
+                    help="ширина подсветки рёбер, мм")
     args = ap.parse_args()
 
     model = fle3d.read_fle3d(args.model)
-    eye = (0.0, args.eye_h, args.dist)
+    # Наблюдатель — напротив столбца с прицелом (как eyeInCalFrame
+    # в firmware/src/EffectScene3D.cpp)
+    ang = COL_DIR * CROSSHAIR_COL * (2 * math.pi / W)
+    eye = (math.sin(ang) * args.dist, args.eye_h, math.cos(ang) * args.dist)
 
-    grid, colors = render(model, args.frame, eye, args.size)
-    print("=== %s, кадр %d ===" % (os.path.basename(args.model), args.frame))
+    grid, colors = render(model, args.frame, eye, args.size, args.edge)
+    print("=== %s, frame %d, size %d%% ===" % (os.path.basename(args.model),
+                                               args.frame, args.size))
     for row in grid:
         print("|" + "".join(row) + "|")
     print()
 
     # фрагмент в цвете (ASCII-раскраска по оттенку)
-    print("цвет (средний по яркости):")
+    print("color (hue):")
     for row in colors:
         line = ""
         for (r, g, b) in row:
@@ -167,6 +240,11 @@ def main():
             else:
                 line += "B"
         print("|" + line + "|")
+
+    print()
+    print("model radius: %.1f units, %d verts, %d tris, %d frames"
+          % (model["modelRadius"], model["vertCount"], model["triCount"],
+             model["frameCount"]))
 
 
 if __name__ == "__main__":

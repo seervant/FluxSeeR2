@@ -174,7 +174,9 @@ def main():
         raise SystemExit("usage: blender --background --python blender_to_fle3d.py -- src dst")
     src, dst = args[0], args[1]
     fps = int(args[2]) if len(args) > 2 else 24
-    max_frames = int(args[3]) if len(args) > 3 else 0
+    # Предел кадров в файле. Длинная анимация семплируется равномерно:
+    # прошивка интерполирует между кадрами, поэтому 72 кадра хватает.
+    max_frames = int(args[3]) if len(args) > 3 else 72
 
     import_model(src)
     obj = find_mesh_object()
@@ -182,8 +184,16 @@ def main():
     scene = bpy.context.scene
     start = scene.frame_start
     end = scene.frame_end
-    if max_frames > 0:
-        end = min(end, start + max_frames - 1)
+
+    # Номера кадров: если их слишком много, берём их равномерно по всей
+    # длительности, а не обрезаем конец.
+    total = end - start + 1
+    if max_frames > 0 and total > max_frames:
+        step = total / float(max_frames)
+        frame_list = [start + int(i * step) for i in range(max_frames)]
+        frame_list[-1] = end
+    else:
+        frame_list = list(range(start, end + 1))
 
     mesh = fle3d.Mesh()
     mesh.triangles = triangles_of(obj)
@@ -197,12 +207,15 @@ def main():
         mesh.colors = [object_color(obj)] * len(obj.data.vertices)
 
     frames = []
-    if end > start:
-        for f in range(start, end + 1):
+    if len(frame_list) > 1:
+        for f in frame_list:
             frames.append(evaluated_positions(obj, f))
         mesh.positions = frames[0]
     else:
         mesh.positions = evaluated_positions(obj, start)
+
+    # центрирование: модель должна стоять в начале координат сцены
+    fle3d.center_model(mesh, frames)
 
     # нормализация по габаритам с учётом всей анимации
     allpos = list(mesh.positions) + [p for fr in frames for p in fr]

@@ -65,6 +65,38 @@ def mesh_bounds(mesh):
     return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
 
 
+def center_model(mesh, frames=None):
+    """
+    Сдвигает модель так, чтобы центр её габаритов оказался в начале координат.
+
+    Прошивка ставит модель в начало координат сцены (ось цилиндра),
+    поэтому центрировать должен конвертер: в исходном файле персонаж
+    обычно стоит «ногами на нуле», и луч из наблюдателя его не находит.
+
+    Габариты считаются по всем кадрам анимации, чтобы при цикле
+    модель не «прыгала».
+    """
+    pts = list(mesh.positions)
+    if frames:
+        for fr in frames:
+            pts.extend(fr)
+    if not pts:
+        return (0.0, 0.0, 0.0)
+
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    zs = [p[2] for p in pts]
+    cx = (min(xs) + max(xs)) * 0.5
+    cy = (min(ys) + max(ys)) * 0.5
+    cz = (min(zs) + max(zs)) * 0.5
+
+    mesh.positions = [(p[0] - cx, p[1] - cy, p[2] - cz) for p in mesh.positions]
+    if frames:
+        for i, fr in enumerate(frames):
+            frames[i] = [(p[0] - cx, p[1] - cy, p[2] - cz) for p in fr]
+    return (cx, cy, cz)
+
+
 def normalize_mesh(mesh, unit=MODEL_UNIT):
     """
     Масштабирует модель так, чтобы полуразмер габаритов по наибольшей оси
@@ -86,6 +118,166 @@ def _norm(v):
     if l < 1e-9:
         return (0.0, 0.0, 1.0)
     return (v[0] / l, v[1] / l, v[2] / l)
+
+
+def decimate_cluster(mesh, grid, frames=None):
+    """
+    Упрощение сетки методом кластеризации вершин.
+
+    Вершины сортируются по ячейкам равномерной сетки; вершины одной ячейки
+    сливаются в одну. Вырожденные треугольники выбрасываются.
+
+    grid — число ячеек по наибольшей оси (16 -> примерно 800 граней).
+    frames — список кадров анимации; к ним применяется та же раскладка.
+
+    Возвращает (mesh, frames).
+    """
+    if grid <= 1 or not mesh.positions:
+        return mesh, frames
+
+    lo, hi = mesh_bounds(mesh)
+    size = [hi[i] - lo[i] for i in range(3)]
+    longest = max(size)
+    if longest <= 1e-9:
+        return mesh, frames
+    cell = longest / float(grid)
+
+    mapping = {}
+    new_pos = []
+    color_sum = []
+    color_n = []
+    remap = []
+
+    for i, p in enumerate(mesh.positions):
+        key = (int(math.floor((p[0] - lo[0]) / cell)),
+               int(math.floor((p[1] - lo[1]) / cell)),
+               int(math.floor((p[2] - lo[2]) / cell)))
+        idx = mapping.get(key)
+        if idx is None:
+            idx = len(new_pos)
+            mapping[key] = idx
+            new_pos.append([p[0], p[1], p[2]])
+            color_sum.append([0.0, 0.0, 0.0, 0.0])
+            color_n.append(0)
+        remap.append(idx)
+
+        c = mesh.colors[i] if i < len(mesh.colors) else (255, 255, 255, 255)
+        cs = color_sum[idx]
+        cs[0] += c[0]; cs[1] += c[1]; cs[2] += c[2]; cs[3] += c[3]
+        color_n[idx] += 1
+
+    # средние позиции и цвета по кластерам
+    acc = {}
+    for i, p in enumerate(mesh.positions):
+        idx = remap[i]
+        a = acc.get(idx)
+        if a is None:
+            acc[idx] = [p[0], p[1], p[2]]
+        else:
+            a[0] += p[0]; a[1] += p[1]; a[2] += p[2]
+    for idx, a in acc.items():
+        n = float(color_n[idx])
+        new_pos[idx] = [a[0] / n, a[1] / n, a[2] / n]
+
+    new_colors = []
+    for idx in range(len(new_pos)):
+        cs = color_sum[idx]
+        n = float(color_n[idx])
+        new_colors.append((int(cs[0] / n), int(cs[1] / n),
+                           int(cs[2] / n), int(cs[3] / n)))
+
+    new_tris = []
+    seen = set()
+    for t in mesh.triangles:
+        a, b, c = remap[t[0]], remap[t[1]], remap[t[2]]
+        if a == b or b == c or a == c:
+            continue
+        # после прореживания разные треугольники могут совпасть —
+        # дубликаты убираем, иначе файл распухает
+        key = (min(a, b, c), a + b + c - min(a, b, c) - max(a, b, c), max(a, b, c))
+        if key in seen:
+            continue
+        seen.add(key)
+        new_tris.append((a, b, c))
+
+    out = Mesh()
+    out.positions = [tuple(p) for p in new_pos]
+    out.colors = new_colors
+    out.triangles = new_tris
+    out.normals = recalc_normals(out.positions, out.triangles)
+
+    # --- кадры анимации ---
+    # Позиции кадра усредняются по тем же кластерам, что и вершины покоя.
+    # Иначе в кадре осталось бы больше точек, чем вершин в модели
+    # (запись файла проверяет равенство длин и падает).
+    new_frames = None
+    if frames:
+        members = {}
+        for i, idx in enumerate(remap):
+            members.setdefault(idx, []).append(i)
+        new_frames = []
+        for fr in frames:
+            nf = []
+            for idx in range(len(new_pos)):
+                ids = members[idx]
+                ax = ay = az = 0.0
+                for i in ids:
+                    p = fr[i]
+                    ax += p[0]; ay += p[1]; az += p[2]
+                n = float(len(ids))
+                nf.append((ax / n, ay / n, az / n))
+            new_frames.append(nf)
+
+    return out, new_frames
+
+
+def limit_triangles(mesh, max_tris):
+    """
+    Оставляет не больше max_tris треугольников, выбрасывая самые мелкие.
+
+    После прореживания тяжёлой модели треугольников может остаться больше,
+    чем нужно лампе. Мелкие грани на матрице всё равно не видны, поэтому
+    их выгоднее убрать, чем рисовать.
+    """
+    if mesh.tri_count <= max_tris:
+        return mesh
+
+    tris = mesh.triangles
+    areas = []
+    for t in tris:
+        a, b, c = mesh.positions[t[0]], mesh.positions[t[1]], mesh.positions[t[2]]
+        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        v = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        n = (u[1] * v[2] - u[2] * v[1],
+             u[2] * v[0] - u[0] * v[2],
+             u[0] * v[1] - u[1] * v[0])
+        areas.append((n[0] * n[0] + n[1] * n[1] + n[2] * n[2], t))
+
+    areas.sort(key=lambda x: -x[0])
+    keep = [t for (_, t) in areas[:max_tris]]
+    mesh.triangles = keep
+    return mesh
+
+
+def recalc_normals(positions, triangles):
+    """Плоские нормали (по граням) — на матрице 48x16 они читаются лучше."""
+    nrm = [[0.0, 0.0, 0.0] for _ in positions]
+    for t in triangles:
+        a, b, c = positions[t[0]], positions[t[1]], positions[t[2]]
+        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        v = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        n = (u[1] * v[2] - u[2] * v[1],
+             u[2] * v[0] - u[0] * v[2],
+             u[0] * v[1] - u[1] * v[0])
+        for idx in t:
+            nrm[idx][0] += n[0]
+            nrm[idx][1] += n[1]
+            nrm[idx][2] += n[2]
+    out = []
+    for n in nrm:
+        l = math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2])
+        out.append((n[0] / l, n[1] / l, n[2] / l) if l > 1e-9 else (0.0, 0.0, 1.0))
+    return out
 
 
 def _qnorm(q):

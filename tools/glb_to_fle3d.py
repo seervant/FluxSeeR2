@@ -11,7 +11,8 @@
                                   [--name "Имя модели"] [--no-scale]
 
 Ограничения (сознательные, под размер матрицы 48x16):
-    - один меш, одна анимация;
+    - все меши модели собираются вместе (у персонажа их несколько);
+    - одна анимация (первая в файле);
     - без текстур (цвет берётся из COLOR_0 или из материала);
     - нормали приводятся к граням (плоское затенение) — на матрице
       768 пикселей гладкие нормали не читаются.
@@ -29,6 +30,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fle3d
+
+# Предел числа кадров анимации в файле. Длинные анимации семплируются:
+# прошивка интерполирует между кадрами, поэтому 48-72 кадров достаточно.
+DEFAULT_MAX_FRAMES = 72
+
+# Сколько вершин оставить до скиннинга. Модели тяжелее этого
+# прореживаются пространственно: считать скиннинг для сотен тысяч
+# вершин в каждом кадре слишком долго и памяти не хватит.
+THIN_LIMIT = 8000
 
 # --- матрицы 4x4 в порядке glTF (столбцы) ---
 
@@ -139,8 +149,15 @@ NCOMP = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4,
          "MAT3": 9, "MAT4": 16}
 
 
-def read_accessor(js, binary, index):
-    """Читает accessor в виде списка кортежей. binary — список буферов."""
+def read_accessor(js, binary, index, cache=None):
+    """
+    Читает accessor в виде списка кортежей. binary — список буферов.
+    cache — словарь для повторного использования: данные accessor'а
+    не меняются от кадра к кадру, а перечитывать их 72 раза дорого.
+    """
+    if cache is not None and index in cache:
+        return cache[index]
+
     acc = js["accessors"][index]
     view = js["bufferViews"][acc["bufferView"]]
     bi = view.get("buffer", 0)
@@ -159,6 +176,8 @@ def read_accessor(js, binary, index):
             out.append(struct.unpack_from("<" + fmt, buf, off)[0])
         else:
             out.append(struct.unpack_from("<" + fmt * ncomp, buf, off))
+    if cache is not None:
+        cache[index] = out
     return out
 
 
@@ -171,42 +190,37 @@ def node_local_matrix(js, node):
     return mat_trs(t, r, s)
 
 
-def build_node_tree(js):
-    """Список узлов с родителями и глобальными матрицами."""
-    nodes = js.get("nodes", [])
-    parent = {}
-    for i, n in enumerate(nodes):
-        for ch in n.get("children", []):
-            parent[ch] = i
-
-    globals_ = [None] * len(nodes)
-
-    def global_of(i):
-        if globals_[i] is not None:
-            return globals_[i]
-        m = node_local_matrix(js, nodes[i])
-        p = parent.get(i)
-        if p is not None:
-            m = mat_mul(global_of(p), m)
-        globals_[i] = m
-        return m
-
-    for i in range(len(nodes)):
-        global_of(i)
-    return parent, globals_
-
-
 # ---------------------------------------------------------------------------
 # Выборка анимации
 # ---------------------------------------------------------------------------
-def sample_sampler(js, binary, samplers, sampler_index, time, kind):
+def build_anim_tracks(js, anim_index):
+    """
+    Дорожки анимации по узлам: {node_index: [(path, sampler_index), ...]}.
+    У узла может быть несколько дорожек (поворот + сдвиг + масштаб) —
+    применяются все вместе, иначе поза «едет».
+
+    Каналы морф-таргетов (path = "weights") пропускаются: формат .fle3d
+    не хранит морфы, а их значения — скаляры, и в общий код они не ложатся.
+    """
+    anim = js["animations"][anim_index]
+    tracks = {}
+    for ch in anim.get("channels", []):
+        node = ch["target"].get("node")
+        path = ch["target"].get("path")
+        if node is None or path not in ("translation", "rotation", "scale"):
+            continue
+        tracks.setdefault(node, []).append((path, ch["sampler"]))
+    return tracks
+
+
+def sample_sampler(js, binary, samplers, sampler_index, time, kind, cache=None):
     """
     Значение дорожки в момент времени. kind = 'VEC3' или 'QUAT'.
     Возвращает None, если времени не покрывают.
     """
     smp = samplers[sampler_index]
-    times = read_accessor(js, binary, smp["input"])
-    values = read_accessor(js, binary, smp["output"])
+    times = read_accessor(js, binary, smp["input"], cache)
+    values = read_accessor(js, binary, smp["output"], cache)
     interp = smp.get("interpolation", "LINEAR")
 
     if not times:
@@ -233,73 +247,77 @@ def sample_sampler(js, binary, samplers, sampler_index, time, kind):
     return v0
 
 
-def animated_node_trs(js, binary, anim_index, node_index, time):
-    """Локальные TRS узла в момент времени (или None, если узел не анимирован)."""
-    anim = js["animations"][anim_index]
-    samplers = anim.get("samplers", [])
-    for ch in anim.get("channels", []):
-        if ch["target"].get("node") != node_index:
-            continue
-        path = ch["target"]["path"]
-        val = sample_sampler(js, binary, samplers, ch["sampler"], time,
-                             "QUAT" if path == "rotation" else "VEC3")
-        if val is None:
-            return None
-        return path, val
-    return None
+def node_parents(js):
+    """Индекс родителя каждого узла (или None)."""
+    parent = {}
+    for i, n in enumerate(js.get("nodes", [])):
+        for ch in n.get("children", []):
+            parent[ch] = i
+    return parent
 
 
-def evaluate_skin(js, binary, skin_index, node_index, time):
+def compute_local_matrices(js, binary, tracks, samplers, time, cache=None):
     """
-    Возвращает матрицы скиннинга для всех костей скина в момент времени:
-    список [(joint_node_index, matrix_16)].
+    Локальные матрицы всех узлов в момент времени (с учётом анимации).
     """
-    skin = js["skins"][skin_index]
-    joints = skin["joints"]
-    parent, globals_ = build_node_tree(js)
-
-    ibm = None
-    if "inverseBindMatrices" in skin:
-        raw = read_accessor(js, binary, skin["inverseBindMatrices"])
-        ibm = [list(r) for r in raw]
-
-    # локальные трансформации узлов в этот момент
     nodes = js.get("nodes", [])
-    local = {}
-    for n in nodes:
-        local[id(n)] = node_local_matrix(js, n)
-    # применяем анимацию
+    local = []
     for i, n in enumerate(nodes):
-        got = animated_node_trs(js, binary, 0, i, time)
-        if got:
-            path, val = got
-            t = n.get("translation", [0.0, 0.0, 0.0])
-            r = n.get("rotation", [0.0, 0.0, 0.0, 1.0])
-            s = n.get("scale", [1.0, 1.0, 1.0])
+        if "matrix" in n:
+            local.append(list(n["matrix"]))
+            continue
+        t = n.get("translation", [0.0, 0.0, 0.0])
+        r = n.get("rotation", [0.0, 0.0, 0.0, 1.0])
+        s = n.get("scale", [1.0, 1.0, 1.0])
+        for path, smp_index in tracks.get(i, []):
+            val = sample_sampler(js, binary, samplers, smp_index, time,
+                                 "QUAT" if path == "rotation" else "VEC3", cache)
+            if val is None:
+                continue
             if path == "translation":
                 t = val
             elif path == "rotation":
                 r = val
-            else:
+            elif path == "scale":
                 s = val
-            local[id(n)] = mat_trs(t, r, s)
+        local.append(mat_trs(t, r, s))
+    return local
 
-    # глобальные матрицы с учётом анимации
+
+def global_matrices(js, parent, local):
+    """Глобальные матрицы узлов (с учётом родителей)."""
     gcache = {}
 
     def global_of(i):
         if i in gcache:
             return gcache[i]
-        m = local[id(nodes[i])]
+        m = local[i]
         p = parent.get(i)
         if p is not None:
             m = mat_mul(global_of(p), m)
         gcache[i] = m
         return m
 
+    return [global_of(i) for i in range(len(local))]
+
+
+def evaluate_skin(js, binary, skin_index, parent, local, cache=None):
+    """
+    Матрицы скиннинга для всех костей скина в момент времени:
+    список [(joint_node_index, matrix_16)].
+    """
+    skin = js["skins"][skin_index]
+    joints = skin["joints"]
+    g = global_matrices(js, parent, local)
+
+    ibm = None
+    if "inverseBindMatrices" in skin:
+        raw = read_accessor(js, binary, skin["inverseBindMatrices"], cache)
+        ibm = [list(r) for r in raw]
+
     out = []
     for k, j in enumerate(joints):
-        m = global_of(j)
+        m = g[j]
         if ibm and k < len(ibm):
             m = mat_mul(m, ibm[k])
         out.append((j, m))
@@ -309,112 +327,401 @@ def evaluate_skin(js, binary, skin_index, node_index, time):
 # ---------------------------------------------------------------------------
 # Сборка модели
 # ---------------------------------------------------------------------------
-def build_mesh(js, binary, node_index, time, skin_index=None):
+def thin_plan(js, binary, node_indices, parent, max_verts=THIN_LIMIT, cache=None):
     """
-    Собирает меш узла в позициях на момент времени.
+    Прореживает модель ДО скиннинга.
+
+    Нужно для тяжёлых файлов: у модели с 363 тысячами вершин считать
+    скиннинг покадрово — это минуты и гигабайты памяти. Прореживание
+    пространственное: вершины, попавшие в одну ячейку общей сетки,
+    сливаются в одну представительскую, треугольники переиспользуют её.
+
+    Возвращает (план, всего_вершин_было). План — словарь
+    (узел, примитив) -> (список оставленных индексов, таблица remap),
+    либо None, если прореживать не нужно.
+    """
+    # --- собираем сырые позиции всех частей ---
+    parts = []
+    total = 0
+    for ni in node_indices:
+        for pi, prim in enumerate(js["meshes"][js["nodes"][ni]["mesh"]]["primitives"]):
+            pos = read_accessor(js, binary, prim["attributes"]["POSITION"], cache)
+            parts.append((ni, pi, pos))
+            total += len(pos)
+    if total <= max_verts:
+        return None, total
+
+    # --- габариты общей сетки ---
+    xs = []
+    ys = []
+    zs = []
+    for (_, _, pos) in parts:
+        for p in pos:
+            xs.append(p[0]); ys.append(p[1]); zs.append(p[2])
+    lo = (min(xs), min(ys), min(zs))
+    hi = (max(xs), max(ys), max(zs))
+    longest = max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+    if longest <= 1e-9:
+        return None, total
+
+    # --- подбираем разрешение: берём максимально мелкую сетку,
+    #     при которой вершин всё ещё не больше лимита ---
+    n = 4
+    plan = None
+    while n <= 2048:
+        cell = longest / float(n)
+        cur = {}
+        kept = 0
+        for (ni, pi, pos) in parts:
+            local_of_cell = {}
+            remap = []
+            keep = []
+            for i, p in enumerate(pos):
+                key = (int((p[0] - lo[0]) / cell),
+                       int((p[1] - lo[1]) / cell),
+                       int((p[2] - lo[2]) / cell))
+                k = local_of_cell.get(key)
+                if k is None:
+                    k = len(keep)
+                    local_of_cell[key] = k
+                    keep.append(i)
+                remap.append(k)
+            cur[(ni, pi)] = (keep, remap)
+            kept += len(keep)
+        if kept > max_verts:
+            break                      # следующая сетка ещё мельче — она лишняя
+        plan = cur
+        n *= 2
+
+    if plan is None:
+        plan = cur
+    return plan, total
+
+
+def build_mesh(js, binary, node_indices, time, tracks, samplers, parent,
+               plan=None, cache=None):
+    """
+    Собирает меш(и) узлов в позициях на момент времени.
+    node_indices — список узлов (у персонажа их несколько: части тела).
+    plan — результат thin_plan(): какие вершины оставить.
     Возвращает (positions, normals, colors, uvs, triangles).
     """
-    node = js["nodes"][node_index]
-    prim = js["meshes"][node["mesh"]]["primitives"][0]
-
-    pos_acc = prim["attributes"]["POSITION"]
-    positions = read_accessor(js, binary, pos_acc)
-
+    positions = []
     normals = []
-    if "NORMAL" in prim["attributes"]:
-        normals = read_accessor(js, binary, prim["attributes"]["NORMAL"])
-
     colors = []
-    if "COLOR_0" in prim["attributes"]:
-        raw = read_accessor(js, binary, prim["attributes"]["COLOR_0"])
-        for c in raw:
-            if len(c) == 3:
-                colors.append((c[0], c[1], c[2], 255))
-            else:
-                colors.append(tuple(c))
-    else:
-        # цвет из материала
-        col = (200, 200, 200, 255)
-        mat = js.get("materials", [])
-        if "material" in prim and prim["material"] < len(mat):
-            bc = mat[prim["material"]].get("pbrMetallicRoughness", {}).get("baseColorFactor")
-            if bc:
-                col = tuple(int(max(0.0, min(1.0, x)) * 255) for x in bc)
-        colors = [col] * len(positions)
-
     uvs = []
-    if "TEXCOORD_0" in prim["attributes"]:
-        uvs = read_accessor(js, binary, prim["attributes"]["TEXCOORD_0"])
+    triangles = []
 
-    indices = []
-    if "indices" in prim:
-        indices = read_accessor(js, binary, prim["indices"])
-    else:
-        indices = list(range(len(positions)))
-    triangles = [(indices[i], indices[i + 1], indices[i + 2])
-                 for i in range(0, len(indices) - 2, 3)]
+    local = compute_local_matrices(js, binary, tracks, samplers, time, cache)
+    g = global_matrices(js, parent, local)
 
-    # --- скиннинг ---
-    if skin_index is not None and "JOINTS_0" in prim["attributes"]:
-        joints = read_accessor(js, binary, prim["attributes"]["JOINTS_0"])
-        weights = read_accessor(js, binary, prim["attributes"]["WEIGHTS_0"])
-        skin_mats = evaluate_skin(js, binary, skin_index, node_index, time)
+    skin_cache = {}
 
-        new_pos = []
-        for i, p in enumerate(positions):
-            acc = [0.0, 0.0, 0.0]
-            js_ = joints[i]
-            ws = weights[i]
-            for k in range(4):
-                w = ws[k] if k < len(ws) else 0.0
-                if w <= 0.0:
-                    continue
-                jn = js_[k] if k < len(js_) else 0
-                # индекс в JOINTS_0 — это позиция в списке joints скина
-                if jn >= len(skin_mats):
-                    continue
-                m = skin_mats[jn][1]
-                tp = mat_transform_point(m, p)
-                acc[0] += tp[0] * w
-                acc[1] += tp[1] * w
-                acc[2] += tp[2] * w
-            new_pos.append(tuple(acc))
-        positions = new_pos
-        normals = []      # пересчитаем ниже
+    def skin_mats_for(idx):
+        """Матрицы скина считаются один раз на кадр, а не на каждую часть тела."""
+        if idx not in skin_cache:
+            skin_cache[idx] = evaluate_skin(js, binary, idx, parent, local, cache)
+        return skin_cache[idx]
+
+    for node_index in node_indices:
+        node = js["nodes"][node_index]
+        node_mat = g[node_index]
+        skin_index = node.get("skin")
+        if skin_index is None:
+            skin_index = js.get("skin")     # внешний скин (fallback конвертера)
+        if skin_index is not None and skin_index >= len(js.get("skins", [])):
+            skin_index = None
+
+        prims = js["meshes"][node["mesh"]]["primitives"]
+        for pi, prim in enumerate(prims):
+
+            pos_acc = prim["attributes"]["POSITION"]
+            p_pos = read_accessor(js, binary, pos_acc, cache)
+
+            p_nrm = []
+            if "NORMAL" in prim["attributes"]:
+                p_nrm = read_accessor(js, binary, prim["attributes"]["NORMAL"], cache)
+
+            p_col = []
+            if "COLOR_0" in prim["attributes"]:
+                raw = read_accessor(js, binary, prim["attributes"]["COLOR_0"], cache)
+                for c in raw:
+                    if len(c) == 3:
+                        p_col.append((c[0], c[1], c[2], 255))
+                    else:
+                        p_col.append(tuple(c))
+            else:
+                # цвет из материала
+                col = (200, 200, 200, 255)
+                mat = js.get("materials", [])
+                if "material" in prim and prim["material"] < len(mat):
+                    bc = mat[prim["material"]].get("pbrMetallicRoughness", {}).get("baseColorFactor")
+                    if bc:
+                        col = tuple(int(max(0.0, min(1.0, x)) * 255) for x in bc)
+                p_col = [col] * len(p_pos)
+
+            p_uv = []
+            if "TEXCOORD_0" in prim["attributes"]:
+                p_uv = read_accessor(js, binary, prim["attributes"]["TEXCOORD_0"], cache)
+
+            idx = []
+            if "indices" in prim:
+                idx = read_accessor(js, binary, prim["indices"], cache)
+            else:
+                idx = list(range(len(p_pos)))
+            p_tris = [(idx[i], idx[i + 1], idx[i + 2])
+                      for i in range(0, len(idx) - 2, 3)]
+
+            joints = []
+            weights = []
+            if "JOINTS_0" in prim["attributes"]:
+                joints = read_accessor(js, binary, prim["attributes"]["JOINTS_0"], cache)
+                weights = read_accessor(js, binary, prim["attributes"]["WEIGHTS_0"], cache)
+
+            # --- прореживание: оставляем только нужные вершины ---
+            sel = plan.get((node_index, pi)) if plan else None
+            if sel is not None:
+                keep, remap = sel
+                p_pos = [p_pos[i] for i in keep]
+                if p_nrm:
+                    p_nrm = [p_nrm[i] for i in keep]
+                p_col = [p_col[i] for i in keep]
+                if p_uv:
+                    p_uv = [p_uv[i] for i in keep]
+                if joints:
+                    joints = [joints[i] for i in keep]
+                    weights = [weights[i] for i in keep]
+                new_tris = []
+                for t in p_tris:
+                    a, b, c = remap[t[0]], remap[t[1]], remap[t[2]]
+                    if a == b or b == c or a == c:
+                        continue        # вырожденный после прореживания
+                    new_tris.append((a, b, c))
+                p_tris = new_tris
+
+            # --- скиннинг ---
+            # По спецификации glTF transform самого узла скина игнорируется:
+            # позицию дают матрицы костей.
+            if skin_index is not None and joints:
+                skin_mats = skin_mats_for(skin_index)
+
+                new_pos = []
+                for i, p in enumerate(p_pos):
+                    acc = [0.0, 0.0, 0.0]
+                    js_ = joints[i]
+                    ws = weights[i]
+                    for k in range(4):
+                        w = ws[k] if k < len(ws) else 0.0
+                        if w <= 0.0:
+                            continue
+                        jn = js_[k] if k < len(js_) else 0
+                        # индекс в JOINTS_0 — это позиция в списке joints скина
+                        if jn >= len(skin_mats):
+                            continue
+                        m = skin_mats[jn][1]
+                        tp = mat_transform_point(m, p)
+                        acc[0] += tp[0] * w
+                        acc[1] += tp[1] * w
+                        acc[2] += tp[2] * w
+                    new_pos.append(tuple(acc))
+                p_pos = new_pos
+                p_nrm = []          # пересчитаем ниже
+
+            else:
+                # статичная часть: переносим в мировые координаты через узел
+                # (если матрица единичная — результат не меняется)
+                p_pos = [mat_transform_point(node_mat, p) for p in p_pos]
+                if p_nrm:
+                    p_nrm = [mat_transform_dir(node_mat, n) for n in p_nrm]
+
+            offset = len(positions)
+            positions.extend(p_pos)
+            normals.extend(p_nrm)
+            colors.extend(p_col)
+            uvs.extend(p_uv)
+            for t in p_tris:
+                triangles.append((t[0] + offset, t[1] + offset, t[2] + offset))
 
     return positions, normals, colors, uvs, triangles
 
 
-def recalc_normals(positions, triangles):
-    """Плоские нормали (по граням) — на матрице 48x16 они читаются лучше."""
-    nrm = [[0.0, 0.0, 0.0] for _ in positions]
-    for t in triangles:
-        a, b, c = positions[t[0]], positions[t[1]], positions[t[2]]
-        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
-        v = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
-        n = (u[1] * v[2] - u[2] * v[1],
-             u[2] * v[0] - u[0] * v[2],
-             u[0] * v[1] - u[1] * v[0])
-        for idx in t:
-            nrm[idx][0] += n[0]
-            nrm[idx][1] += n[1]
-            nrm[idx][2] += n[2]
+def find_model_nodes(js):
+    """
+    Все узлы с мешами — у персонажа их несколько (части тела на одном скине).
+    Возвращает (список индексов узлов, индекс скина по умолчанию).
+    """
+    nodes = js.get("nodes", [])
+    meshes = js.get("meshes", [])
     out = []
-    for n in nrm:
-        l = math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2])
-        out.append((n[0] / l, n[1] / l, n[2] / l) if l > 1e-9 else (0.0, 0.0, 1.0))
-    return out
+    for i, n in enumerate(nodes):
+        if "mesh" in n and n["mesh"] < len(meshes):
+            out.append(i)
+    default_skin = 0 if js.get("skins") else None
+    return out, default_skin
 
 
-def find_skinned_node(js):
-    """Ищет узел с мешем, к которому привязан скин."""
-    for i, n in enumerate(js.get("nodes", [])):
-        if "mesh" in n and "skin" in n:
+def pick_anim(js, spec):
+    """
+    Выбор клипа анимации: номер или часть имени.
+    В некоторых моделях клипов сотни (у Mario — 193), поэтому нужно
+    уметь указать нужный.
+    """
+    anims = js.get("animations", [])
+    if not anims:
+        return 0
+    if not spec:
+        return 0
+    if spec.lstrip("-").isdigit():
+        i = int(spec)
+        if 0 <= i < len(anims):
             return i
-    for i, n in enumerate(js.get("nodes", [])):
-        if "mesh" in n:
-            return i
-    return None
+        raise SystemExit("клипа с номером %d нет (всего %d)" % (i, len(anims)))
+    low = spec.lower()
+    hits = [i for i, a in enumerate(anims) if low in (a.get("name") or "").lower()]
+    if not hits:
+        raise SystemExit("клип '%s' не найден" % spec)
+    return hits[0]
+
+
+def build_scene(src, fps=24, frames_arg=0, anim_spec="", no_scale=False,
+                max_frames=DEFAULT_MAX_FRAMES):
+    """
+    Читает модель и готовит сетку с кадрами анимации.
+
+    Возвращает словарь: mesh, frames, frame_count, out_fps, duration,
+    anim_index, anim_name, anim_count.
+    """
+    js, binary = load_gltf(src)
+    cache = {}
+
+    node_indices, default_skin = find_model_nodes(js)
+    if not node_indices:
+        raise SystemExit("в модели нет узла с мешем")
+
+    # скин по умолчанию: если узлы не указывают свой, берём первый
+    if default_skin is not None:
+        js["skin"] = default_skin
+
+    # --- анимация ---
+    tracks = {}
+    samplers = []
+    duration = 0.0
+    anim_index = 0
+    anim_name = ""
+    if js.get("animations"):
+        anim_index = pick_anim(js, anim_spec)
+        anim = js["animations"][anim_index]
+        anim_name = anim.get("name") or ""
+        samplers = anim.get("samplers", [])
+        tracks = build_anim_tracks(js, anim_index)
+        for ch in anim.get("channels", []):
+            smp = samplers[ch["sampler"]]
+            times = read_accessor(js, binary, smp["input"], cache)
+            if times:
+                duration = max(duration, times[-1])
+
+    parent = node_parents(js)
+
+    # --- прореживание тяжёлых моделей (до скиннинга) ---
+    plan, raw_verts = thin_plan(js, binary, node_indices, parent, cache=cache)
+
+    # Если длительность цикла задана кадрами — шаг времени фиксирован.
+    # Иначе растягиваем анимацию на весь цикл и пересчитываем fps,
+    # чтобы прошивка проигрывала ровно исходную длительность.
+    if frames_arg > 0:
+        frame_count = frames_arg
+        out_fps = fps
+        time_of = lambda f: f / float(fps)
+    else:
+        frame_count = max(1, int(round(duration * fps)))
+        out_fps = fps
+        # Длинная анимация семплируется: кадры берутся равномерно по всей
+        # длительности, прошивка дорисовывает промежутки интерполяцией.
+        if max_frames > 0 and frame_count > max_frames and duration > 0.0:
+            frame_count = max_frames
+            out_fps = max(1, int(round(frame_count / duration)))
+            time_of = lambda f: (f / float(frame_count)) * duration
+        elif duration > 0.0 and frame_count > 1:
+            out_fps = max(1, int(round(frame_count / duration)))
+            time_of = lambda f: (f / float(frame_count)) * duration
+        else:
+            time_of = lambda f: 0.0
+
+    # --- базовый кадр (поза покоя) ---
+    pos0, nrm0, col0, uv0, tri0 = build_mesh(js, binary, node_indices, 0.0,
+                                              tracks, samplers, parent,
+                                              plan=plan, cache=cache)
+
+    mesh = fle3d.Mesh()
+    mesh.positions = pos0
+    mesh.triangles = tri0
+    mesh.colors = col0
+    mesh.uvs = uv0
+    mesh.normals = fle3d.recalc_normals(pos0, tri0)
+
+    # --- кадры анимации ---
+    frames = []
+    if js.get("animations") and frame_count > 1:
+        for f in range(frame_count):
+            pf, _, _, _, _ = build_mesh(js, binary, node_indices, time_of(f),
+                                        tracks, samplers, parent,
+                                        plan=plan, cache=cache)
+            frames.append(pf)
+
+    # --- центрирование (модель должна стоять в начале координат сцены) ---
+    fle3d.center_model(mesh, frames)
+
+    # --- нормализация по габаритам (по всем кадрам) ---
+    if not no_scale:
+        allpos = list(mesh.positions) + [p for fr in frames for p in fr]
+        tmp = fle3d.Mesh()
+        tmp.positions = allpos
+        k = fle3d.normalize_mesh(tmp)
+        mesh.positions = [(p[0] * k, p[1] * k, p[2] * k) for p in mesh.positions]
+        frames = [[(p[0] * k, p[1] * k, p[2] * k) for p in fr] for fr in frames]
+
+    return {
+        "mesh": mesh,
+        "frames": frames,
+        "frame_count": frame_count,
+        "out_fps": out_fps,
+        "duration": duration,
+        "anim_index": anim_index,
+        "anim_name": anim_name,
+        "anim_count": len(js.get("animations", [])),
+        "raw_verts": raw_verts,
+        "thinned": plan is not None,
+    }
+
+
+def simplify_scene(scene, grid, max_tris=0):
+    """
+    Возвращает (mesh, frames) с нужным уровнем упрощения.
+    Исходная сцена не меняется — можно перебрать несколько уровней.
+    max_tris — жёсткий предел числа треугольников (0 — без предела).
+    """
+    mesh = scene["mesh"]
+    frames = scene["frames"]
+    if grid > 1:
+        mesh, frames = fle3d.decimate_cluster(mesh, grid, frames)
+    if max_tris > 0 and mesh.tri_count > max_tris:
+        # список треугольников копируем: сцена должна остаться целой,
+        # её переиспользуют при подборе уровня упрощения
+        mesh.triangles = list(mesh.triangles)
+        fle3d.limit_triangles(mesh, max_tris)
+    mesh.normals = fle3d.recalc_normals(mesh.positions, mesh.triangles)
+    return mesh, frames
+
+
+def save_scene(scene, dst, decimate=0, loop=True):
+    """
+    При необходимости упрощает сетку и записывает .fle3d.
+    Возвращает (размер файла, mesh, frames).
+    """
+    mesh, frames = simplify_scene(scene, decimate)
+    size = fle3d.write_fle3d(dst, mesh, frames=frames, fps=scene["out_fps"],
+                             loop=loop)
+    return size, mesh, frames
 
 
 def main():
@@ -425,73 +732,33 @@ def main():
     ap.add_argument("--frames", type=int, default=0, help="длительность цикла в кадрах (0 — вся анимация)")
     ap.add_argument("--loop", action="store_true", default=True)
     ap.add_argument("--no-scale", action="store_true", help="не нормализовать по габаритам")
+    ap.add_argument("--decimate", type=int, default=0,
+                    help="упростить сетку: число ячеек по большей оси (12-20 -> ~800 граней)")
+    ap.add_argument("--anim", default="",
+                    help="клип анимации: номер или часть имени (например \"walk\")")
     args = ap.parse_args()
 
-    js, binary = load_gltf(args.source)
-
-    node_index = find_skinned_node(js)
-    if node_index is None:
-        raise SystemExit("в модели нет узла с мешем")
-
-    skin_index = js["nodes"][node_index].get("skin")
-    if skin_index is None:
-        for s in js.get("skins", []):
-            skin_index = js.get("skins").index(s)
-            break
-
-    # --- длительность анимации ---
-    duration = 0.0
-    if js.get("animations"):
-        anim = js["animations"][0]
-        samplers = anim.get("samplers", [])
-        for ch in anim["channels"]:
-            smp = samplers[ch["sampler"]]
-            times = read_accessor(js, binary, smp["input"])
-            if times:
-                duration = max(duration, times[-1])
-    frame_count = args.frames if args.frames > 0 else max(1, int(round(duration * args.fps)))
-
-    # --- базовый кадр (поза покоя) ---
-    pos0, nrm0, col0, uv0, tri0 = build_mesh(js, binary, node_index, 0.0, skin_index)
-
-    mesh = fle3d.Mesh()
-    mesh.positions = pos0
-    mesh.triangles = tri0
-    mesh.colors = col0
-    mesh.uvs = uv0
-    mesh.normals = recalc_normals(pos0, tri0)
-
-    # --- кадры анимации ---
-    frames = []
-    if js.get("animations") and frame_count > 1:
-        for f in range(frame_count):
-            t = f / float(args.fps)
-            pf, _, _, _, _ = build_mesh(js, binary, node_index, t, skin_index)
-            frames.append(pf)
-
-    # --- нормализация по габаритам (по всем кадрам) ---
-    if not args.no_scale:
-        allpos = list(mesh.positions) + [p for fr in frames for p in fr]
-        tmp = fle3d.Mesh()
-        tmp.positions = allpos
-        k = fle3d.normalize_mesh(tmp)
-        mesh.positions = [(p[0] * k, p[1] * k, p[2] * k) for p in mesh.positions]
-        frames = [[(p[0] * k, p[1] * k, p[2] * k) for p in fr] for fr in frames]
-
-    size = fle3d.write_fle3d(args.target, mesh, frames=frames, fps=args.fps,
-                             loop=args.loop)
+    scene = build_scene(args.source, fps=args.fps, frames_arg=args.frames,
+                        anim_spec=args.anim, no_scale=args.no_scale)
+    size, mesh, frames = save_scene(scene, args.target, decimate=args.decimate,
+                                    loop=args.loop)
 
     print("done: %s" % args.target)
     print("  vertices  : %d" % mesh.vertex_count)
     print("  triangles : %d" % mesh.tri_count)
-    print("  frames    : %d @ %d fps" % (frame_count, args.fps))
+    print("  frames    : %d @ %d fps" % (scene["frame_count"], scene["out_fps"]))
+    if scene["anim_count"]:
+        print("  clip      : %d (%s) of %d" % (scene["anim_index"],
+                                               scene["anim_name"] or "-",
+                                               scene["anim_count"]))
+    if scene["duration"] > 0.0:
+        print("  cycle     : %.2f s" % scene["duration"])
     print("  size      : %d bytes (%.0f KB)" % (size, size / 1024.0))
 
-    # --- предупреждения по бюджету лампы ---
+    # --- budget warnings ---
     warn = False
     if mesh.vertex_count > 600:
         print("  WARNING: vertices > 600 - the lamp will draw it slowly.")
-        print("           Simplify the model in Blender (Decimate) and repeat.")
         warn = True
     if mesh.tri_count > 800:
         print("  WARNING: triangles > 800 - too dense for 48x16.")

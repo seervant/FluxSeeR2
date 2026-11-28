@@ -11,7 +11,21 @@ firmware/.pio/
 # Прочее
 .DS_Store
 Thumbs.db
-# �������� ��������� ���������� �������
+
+# Тестовые артефакты конвертера моделей
 tools/test.glb
+tools/test.gltf
+tools/test.bin
 tools/test.fle3d
+tools/test2.fle3d
 tools/__pycache__/
+
+# Исходники 3D-моделей — это рабочие файлы, они большие (сотни МБ).
+# В репозитории лежат только готовые .fle3d (папка models/fle3d).
+models/*.glb
+models/*.gltf
+models/*.bin
+models/*.zip
+models/*.png
+models/out/
+models/mario__super_mario_64_rigged_animated/
