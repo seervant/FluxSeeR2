@@ -20,6 +20,7 @@
 """
 
 import argparse
+import base64
 import json
 import math
 import os
@@ -84,7 +85,11 @@ def quat_slerp(a, b, t):
 # Чтение GLB
 # ---------------------------------------------------------------------------
 def load_gltf(path):
-    """Возвращает (json, binary_chunk)."""
+    """
+    Возвращает (json, buffers), где buffers — список байтовых буферов.
+    Поддерживаются .glb, .gltf с внешними .bin и .gltf с данными внутри
+    (data: URI, base64).
+    """
     with open(path, "rb") as f:
         data = f.read()
 
@@ -92,7 +97,7 @@ def load_gltf(path):
         length = struct.unpack_from("<I", data, 8)[0]
         offset = 12
         js = None
-        binary = b""
+        buffers = []
         while offset < length:
             clen, ctype = struct.unpack_from("<II", data, offset)
             offset += 8
@@ -101,24 +106,32 @@ def load_gltf(path):
             if ctype == 0x4E4F534A:      # JSON
                 js = json.loads(chunk.decode("utf-8"))
             elif ctype == 0x004E4942:    # BIN
-                binary = chunk
+                buffers.append(chunk)
         if js is None:
             raise ValueError("в файле нет JSON-чанка")
-        return js, binary
+        return js, buffers
 
-    # .gltf + внешний .bin
+    # .gltf: буферы могут быть внешними файлами или быть встроены в URI
     with open(path, "r", encoding="utf-8") as f:
         js = json.load(f)
-    binary = b""
+
+    base = os.path.dirname(os.path.abspath(path))
+    buffers = []
     for buf in js.get("buffers", []):
         uri = buf.get("uri", "")
         if not uri:
+            buffers.append(b"")          # GLB-вставка внутри .gltf — не поддержана
             continue
-        base = os.path.dirname(os.path.abspath(path))
-        with open(os.path.join(base, uri), "rb") as f:
-            binary = f.read()
-        break
-    return js, binary
+        if uri.startswith("data:"):
+            head, _, payload = uri.partition(",")
+            if ";base64" in head:
+                buffers.append(base64.b64decode(payload))
+            else:
+                buffers.append(payload.encode("utf-8"))
+        else:
+            with open(os.path.join(base, uri), "rb") as f:
+                buffers.append(f.read())
+    return js, buffers
 
 
 CTYPES = {5120: "b", 5121: "B", 5122: "h", 5123: "H", 5125: "I", 5126: "f"}
@@ -127,9 +140,11 @@ NCOMP = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4,
 
 
 def read_accessor(js, binary, index):
-    """Читает accessor в виде списка кортежей."""
+    """Читает accessor в виде списка кортежей. binary — список буферов."""
     acc = js["accessors"][index]
     view = js["bufferViews"][acc["bufferView"]]
+    bi = view.get("buffer", 0)
+    buf = binary[bi] if bi < len(binary) else b""
     base = view.get("byteOffset", 0) + acc.get("byteOffset", 0)
 
     fmt = CTYPES[acc["componentType"]]
@@ -141,9 +156,9 @@ def read_accessor(js, binary, index):
     for i in range(acc["count"]):
         off = base + i * stride
         if ncomp == 1:
-            out.append(struct.unpack_from("<" + fmt, binary, off)[0])
+            out.append(struct.unpack_from("<" + fmt, buf, off)[0])
         else:
-            out.append(struct.unpack_from("<" + fmt * ncomp, binary, off))
+            out.append(struct.unpack_from("<" + fmt * ncomp, buf, off))
     return out
 
 
@@ -470,7 +485,25 @@ def main():
     print("  vertices  : %d" % mesh.vertex_count)
     print("  triangles : %d" % mesh.tri_count)
     print("  frames    : %d @ %d fps" % (frame_count, args.fps))
-    print("  size      : %d bytes" % size)
+    print("  size      : %d bytes (%.0f KB)" % (size, size / 1024.0))
+
+    # --- предупреждения по бюджету лампы ---
+    warn = False
+    if mesh.vertex_count > 600:
+        print("  WARNING: vertices > 600 - the lamp will draw it slowly.")
+        print("           Simplify the model in Blender (Decimate) and repeat.")
+        warn = True
+    if mesh.tri_count > 800:
+        print("  WARNING: triangles > 800 - too dense for 48x16.")
+        warn = True
+    if size > 600 * 1024:
+        print("  WARNING: file > 600 KB - loading from the card will take longer.")
+        warn = True
+    if not warn:
+        print("  fits the lamp budget (see MODEL_FORMAT.md)")
+
+    if mesh.tri_count < 20:
+        print("  NOTE: very few triangles - the model may look flat on the matrix.")
 
 
 if __name__ == "__main__":

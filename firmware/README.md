@@ -587,9 +587,11 @@ SD-карте в папке `/fle3d/`. Формат, требования к м�
 
 * файл `.fle3d` — сетка треугольников с **запечённой анимацией** (скелет в
   файле не нужен), цвет — в вершинах, текстуры не используются;
-* конвертация: `python tools/glb_to_fle3d.py model.glb model.fle3d`
-  (GLB/GLTF, без Blender) или `blender --background --python
-  tools/blender_to_fle3d.py -- model.fbx out.fle3d` (любой формат);
+* исходники: **`.glb`** и **`.gltf` + `.bin`** — конвертируются напрямую
+  (`python tools/glb_to_fle3d.py model.glb model.fle3d`); **`.usdz`**, `.fbx`,
+  `.obj` — через Blender (`blender --background --python
+  tools/blender_to_fle3d.py -- model.usdz out.fle3d`), причём он запекает
+  текстуру в цвета вершин;
 * проверка до прошивки: `python tools/check_fle3d_render.py model.fle3d` —
   печатает, как модель ляжет на матрицу 48×16;
 * прошивка читает файл в PSRAM, строит BVH и рисует тем же лучом, что и

@@ -48,6 +48,8 @@ def import_model(path):
         bpy.ops.import_scene.fbx(filepath=path)
     elif ext == ".obj":
         bpy.ops.wm.obj_import(filepath=path)
+    elif ext in (".usd", ".usda", ".usdc", ".usdz"):
+        bpy.ops.wm.usd_import(filepath=path)     # USD-импортёр встроен в Blender
     elif ext == ".blend":
         bpy.ops.wm.open_mainfile(filepath=path)
     else:
@@ -78,6 +80,71 @@ def object_color(obj):
         c = me.materials[0].diffuse_color
         return (int(c[0] * 255), int(c[1] * 255), int(c[2] * 255), 255)
     return (220, 220, 220, 255)
+
+
+def colors_from_texture(obj):
+    """
+    Запекает текстуру материала в цвета вершин: в матрице 48x16 текстура
+    не помещается, а одноцветная модель выглядит бедно. Если у модели есть
+    текстура — берём цвет пикселя в UV-координате каждой вершины.
+    Возвращает список цветов или None, если текстуры нет.
+    """
+    me = obj.data
+    uv_layer = me.uv_layers.active if len(me.uv_layers) else None
+    if uv_layer is None:
+        return None
+    if not len(me.materials) or me.materials[0] is None:
+        return None
+
+    mat = me.materials[0]
+    if not mat.use_nodes:
+        return None
+
+    image = None
+    for node in mat.node_tree.nodes:
+        if node.type == "TEX_IMAGE" and node.image is not None:
+            image = node.image
+            break
+    if image is None:
+        return None
+
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    w, h = image.size
+    if w == 0 or h == 0:
+        return None
+
+    buf = np.empty(w * h * 4, dtype=np.float32)
+    image.pixels.foreach_get(buf)
+    buf = buf.reshape(h, w, 4)
+
+    def sample(u, v):
+        x = int(u * w) % w
+        y = int(v * h) % h
+        px = buf[y, x]
+        rgb = [px[0], px[1], px[2]]
+        if px[3] < 0.5:
+            return None
+        # Blender отдаёт линейные значения — возвращаем в sRGB
+        out = []
+        for c in rgb:
+            c = max(0.0, min(1.0, c))
+            s = 12.92 * c if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
+            out.append(int(max(0.0, min(1.0, s)) * 255))
+        return (out[0], out[1], out[2], 255)
+
+    cols = [None] * len(me.vertices)
+    fallback = object_color(obj)
+    for poly in me.polygons:
+        for vi in poly.vertices:
+            if cols[vi] is not None:
+                continue
+            uv = uv_layer.data[vi].uv
+            cols[vi] = sample(uv[0], uv[1]) or fallback
+    return cols
 
 
 def triangles_of(obj):
@@ -120,7 +187,14 @@ def main():
 
     mesh = fle3d.Mesh()
     mesh.triangles = triangles_of(obj)
-    mesh.colors = [object_color(obj)] * len(obj.data.vertices)
+
+    # Цвета: сначала пробуем запечь текстуру, иначе — цвет материала
+    tex_cols = colors_from_texture(obj)
+    if tex_cols:
+        mesh.colors = tex_cols
+        print("  colors    : baked from texture")
+    else:
+        mesh.colors = [object_color(obj)] * len(obj.data.vertices)
 
     frames = []
     if end > start:
